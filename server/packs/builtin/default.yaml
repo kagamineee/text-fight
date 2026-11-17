@@ -1,0 +1,48 @@
+id: default-arena
+name: 无名角斗场
+description: 数值基线包。一座没有名字的角斗场，规则只有一条——活到最后。
+
+hp:
+  base: 40
+  regen: 5
+
+intensity:
+  cap_base: 8
+  cap_growth: 2          # cap(t) = 8 + 2*(t-1)
+  ceiling_factor: 1.5
+  level_words:
+    微弱: 0.3
+    寻常: 0.6
+    强力: 1.0
+    致命: 1.6
+
+attributes:
+  max_count: 3
+  max_initial: 10
+  max_cap: 30
+  max_exchange_rate: 2.0
+
+timers:
+  declare_s: 60
+  judge_s: 60
+
+disaster:
+  start_turn: 15
+  every_n_turns: 3
+  base_damage: 2
+  growth: 1
+
+appeal:
+  count: 2
+  window_s: 30
+  vote_s: 60
+
+inheritance:
+  power_ratio: 0.4
+
+victory: last_alive
+tie_break:
+  - survived_turns
+  - hp_peak
+
+referee_prompt: ""
