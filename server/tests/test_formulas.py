@@ -1,4 +1,4 @@
-"""P0 公式单测：软上限、硬上限、对冲、均摊、防御、底线、磨损。"""
+"""公式单测：软上限、硬上限、钳制、防御、底线、磨损。"""
 
 from __future__ import annotations
 
@@ -7,19 +7,18 @@ import unittest
 from server.game.formulas import (
     IntensityRules,
     apply_armor_wear,
+    clamp_attr_value,
+    clamp_hp_effects,
+    clamp_new_attr,
     clamp_to_hard,
-    counter_factor,
     effective_defense,
-    parse_intensity_hint,
     resolve_damage,
-    split_shares,
 )
 
 RULES = IntensityRules(
     cap_base=8,
     cap_growth=2,
     ceiling_factor=1.5,
-    level_words={"微弱": 0.3, "寻常": 0.6, "强力": 1.0, "致命": 1.6},
 )
 
 
@@ -43,18 +42,6 @@ class IntensityTests(unittest.TestCase):
         self.assertEqual(RULES.hard(1), 12)
         self.assertEqual(RULES.hard(3), 18)
 
-    def test_parse_numeric(self) -> None:
-        self.assertEqual(parse_intensity_hint("6", RULES, 1, 0.6), 6.0)
-        self.assertEqual(parse_intensity_hint("999", RULES, 1, 0.6), 999.0)
-
-    def test_parse_level_word(self) -> None:
-        self.assertEqual(parse_intensity_hint("强力", RULES, 1, 0.6), 8.0)
-        self.assertAlmostEqual(parse_intensity_hint("寻常", RULES, 3, 0.6), 7.2)
-
-    def test_parse_default_ratio(self) -> None:
-        self.assertAlmostEqual(parse_intensity_hint(None, RULES, 1, 0.6), 4.8)
-        self.assertAlmostEqual(parse_intensity_hint("不存在", RULES, 1, 0.5), 4.0)
-
 
 class ClampTests(unittest.TestCase):
     def test_clamp_to_hard(self) -> None:
@@ -62,24 +49,77 @@ class ClampTests(unittest.TestCase):
         self.assertEqual(clamp_to_hard(-5.0, 1, RULES), 0.0)
         self.assertEqual(clamp_to_hard(7.5, 1, RULES), 7.5)
 
+    def test_single_overdamage_is_clamped_to_hard(self) -> None:
+        effects, clamped = clamp_hp_effects(
+            [{"player_id": "a", "hp_delta": -999}],
+            {"a": 40},
+            {"a": 40},
+            hard=12,
+        )
+        self.assertEqual(effects, [{"player_id": "a", "hp_delta": -12}])
+        self.assertTrue(clamped)
 
-class CounterTests(unittest.TestCase):
-    def test_counter_decays(self) -> None:
-        self.assertEqual(counter_factor([]), 1.0)
-        self.assertAlmostEqual(counter_factor([{"kind": "counter"}]), 0.85)
-        self.assertAlmostEqual(counter_factor([{"kind": "counter"}] * 3), 0.55)
-        self.assertAlmostEqual(counter_factor([{"kind": "counter"}] * 9), 0.55)
+    def test_damage_cannot_exceed_remaining_hp(self) -> None:
+        effects, clamped = clamp_hp_effects(
+            [{"player_id": "a", "hp_delta": -9}],
+            {"a": 4},
+            {"a": 40},
+            hard=12,
+        )
+        self.assertEqual(effects, [{"player_id": "a", "hp_delta": -4}])
+        self.assertTrue(clamped)
 
-    def test_ignore_non_counter(self) -> None:
-        self.assertEqual(counter_factor([{"kind": "endure"}, {"kind": "ignore"}]), 1.0)
+    def test_total_damage_budget(self) -> None:
+        effects, clamped = clamp_hp_effects(
+            [
+                {"player_id": "a", "hp_delta": -10},
+                {"player_id": "b", "hp_delta": -10},
+            ],
+            {"a": 40, "b": 40},
+            {"a": 40, "b": 40},
+            hard=12,
+        )
+        self.assertEqual([e["hp_delta"] for e in effects], [-10, -2])
+        self.assertTrue(clamped)
+
+    def test_heal_cannot_exceed_gap(self) -> None:
+        effects, clamped = clamp_hp_effects(
+            [{"player_id": "a", "hp_delta": 999}],
+            {"a": 37},
+            {"a": 40},
+            hard=12,
+        )
+        self.assertEqual(effects, [{"player_id": "a", "hp_delta": 3}])
+        self.assertTrue(clamped)
+
+    def test_unknown_player_dropped(self) -> None:
+        effects, clamped = clamp_hp_effects(
+            [{"player_id": "ghost", "hp_delta": -5}], {"a": 40}, {"a": 40}, hard=12
+        )
+        self.assertEqual(effects, [])
+        self.assertTrue(clamped)
+
+    def test_legal_effects_untouched(self) -> None:
+        effects, clamped = clamp_hp_effects(
+            [{"player_id": "a", "hp_delta": -5}, {"player_id": "b", "hp_delta": 2}],
+            {"a": 40, "b": 30},
+            {"a": 40, "b": 40},
+            hard=12,
+        )
+        self.assertEqual(
+            effects,
+            [{"player_id": "a", "hp_delta": -5}, {"player_id": "b", "hp_delta": 2}],
+        )
+        self.assertFalse(clamped)
+
+    def test_attr_bounds(self) -> None:
+        self.assertEqual(clamp_attr_value(-3, 8), 0)
+        self.assertEqual(clamp_attr_value(99, 8), 8)
+        self.assertEqual(clamp_new_attr(99, 999, max_initial=10, max_cap=30), (10, 30))
+        self.assertEqual(clamp_new_attr(0, 0, max_initial=10, max_cap=30), (1, 1))
 
 
-class DamageTests(unittest.TestCase):
-    def test_split_shares(self) -> None:
-        self.assertEqual(split_shares(12.0, 3), [4.0, 4.0, 4.0])
-        self.assertEqual(split_shares(10.0, 2), [5.0, 5.0])
-        self.assertEqual(split_shares(10.0, 0), [])
-
+class DefenseTests(unittest.TestCase):
     def test_effective_defense(self) -> None:
         attrs = [FakeAttr("a", 3, 2.0), FakeAttr("b", 0, 5.0), FakeAttr("c", 4, 1.0, "attack")]
         total, used = effective_defense(attrs)

@@ -1,15 +1,22 @@
 export type Phase = 'lobby' | 'declare' | 'adjudicate' | 'settle' | 'over'
 
+export type BotDifficulty = 'easy' | 'normal' | 'hard' | 'inferno'
+
 export interface PublicAttr {
   attr_id: string
   name: string
   narrative: string
   attr_type: string
+  value: number
+  cap: number
+  expires_turn: number
+  shield: boolean
+  freeze: boolean
+  charges: number
+  per_turn: number
 }
 
 export interface PrivateAttr extends PublicAttr {
-  value: number
-  cap: number
   initial: number
   exchange_rate: number
   consume_rule: string
@@ -21,6 +28,7 @@ export interface PlayerView {
   name: string
   seat: number
   kind: 'human' | 'bot'
+  bot_difficulty?: BotDifficulty
   hp: number
   hp_max: number
   alive: boolean
@@ -51,6 +59,17 @@ export interface RoomState {
   current_actor: string | null
   deadline: number | null
   over: boolean
+  result?: {
+    winner_name: string | null
+    ranking: Array<{
+      player_id: string
+      name: string
+      alive: boolean
+      hp: number
+      survived_turns: number
+    }>
+  } | null
+  world_summary?: string
 }
 
 export interface LedgerEntry {
@@ -73,6 +92,8 @@ export interface Adjudication {
   ledger_seq: number
   narrative: string
   effects: { player_id: string; delta: number; hp: number }[]
+  source?: 'ai' | 'stub'
+  clamped?: boolean
 }
 
 export interface ChatMsg {

@@ -1,4 +1,4 @@
-import { addFloat, getState, setState, toast } from './store'
+import { addFloat, getState, resetRoom, setState, toast } from './store'
 import type { LedgerEntry, PrivateAttr } from './types'
 
 let ws: WebSocket | null = null
@@ -38,6 +38,13 @@ export function disconnectWs() {
   manualClose = true
   ws?.close()
   ws = null
+}
+
+/** 主动离开当前房间：通知服务端，并立刻清空本地房间状态（回到首页）。 */
+export function leaveRoom() {
+  send({ type: 'leave_room' })
+  ledgerSeq = 0
+  resetRoom()
 }
 
 function open() {
@@ -105,6 +112,7 @@ function handle(msg: any) {
     case 'room_state':
       setState((s) => ({
         room: msg,
+        result: msg.result ?? null,
         ledger: s.room && s.room.room_id === msg.room_id ? s.ledger : [],
       }))
       return
@@ -116,6 +124,7 @@ function handle(msg: any) {
         room: msg.state,
         myAttrs: attrs,
         ledger: msg.ledger ?? [],
+        result: msg.state?.result ?? null,
       })
       ledgerSeq = msg.last_seq ?? 0
       return
@@ -133,6 +142,14 @@ function handle(msg: any) {
 
     case 'turn_begin': {
       const hp = msg.hp ?? {}
+      const prev = getState().room
+      // 回血可见化：回合开始的自然回复显示 +N 浮动，不再静默改血量
+      if (prev) {
+        for (const p of prev.players) {
+          const next = hp[p.player_id]
+          if (next !== undefined && next > p.hp) addFloat(p.player_id, next - p.hp)
+        }
+      }
       setState((s) => {
         if (!s.room) return {}
         return {
@@ -191,6 +208,27 @@ function handle(msg: any) {
       })
       return
 
+    case 'judge_fallback':
+      toast(`裁判降级：${msg.reason}`, 'warn')
+      if (msg.ledger_seq) {
+        pushLedger({
+          seq: msg.ledger_seq,
+          turn_no: msg.turn_no ?? getState().room?.turn_no ?? 0,
+          actor: null,
+          type: 'system',
+          content: `裁判降级：${msg.reason}`,
+          intensity: null,
+          status: 'active',
+        })
+      }
+      return
+
+    case 'world_summary':
+      setState((s) =>
+        s.room ? { room: { ...s.room, world_summary: msg.text } } : {},
+      )
+      return
+
     case 'hp_update': {
       setState((s) => {
         if (!s.room) return {}
@@ -209,6 +247,17 @@ function handle(msg: any) {
 
     case 'attribute_opened':
       toast(`${msg.player_name ?? '有人'} 多了个属性「${msg.name}」`, 'info')
+      return
+
+    case 'attribute_removed':
+      toast(
+        `${msg.player_name ?? '有人'} 的「${msg.name}」${msg.reason === 'expired' ? '到时限消失了' : '没了'}`,
+        'warn',
+      )
+      return
+
+    case 'frozen_skip':
+      toast(`${msg.name} 被「${msg.attr}」冻住，无法行动`, 'warn')
       return
 
     case 'attribute_private': {
@@ -267,6 +316,7 @@ function handle(msg: any) {
         declaration: null,
         adjudication: null,
         myAttrs: [],
+        chats: [],
         result: null,
       })
       return

@@ -25,11 +25,22 @@ class Hub:
             if room_id:
                 self._rooms.setdefault(room_id, set()).add(player_id)
 
-    async def unbind(self, player_id: str, room_id: str | None) -> None:
+    async def unbind(
+        self, player_id: str, room_id: str | None, ws: WebSocket | None = None
+    ) -> bool:
+        """解除连接，返回是否真的解除了。
+
+        传入 ws 时，只有它仍是该玩家的当前连接才会生效：页面刷新、双标签页
+        会让同一 player_id 先后存在两个连接，旧连接的关闭事件不能把新连接
+        的注册顶掉，否则房间广播会全部丢失。
+        """
         async with self._lock:
+            if ws is not None and self._sockets.get(player_id) is not ws:
+                return False
             self._sockets.pop(player_id, None)
             if room_id and room_id in self._rooms:
                 self._rooms[room_id].discard(player_id)
+            return True
 
     async def move(self, player_id: str, room_id: str) -> None:
         async with self._lock:

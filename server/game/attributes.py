@@ -29,10 +29,18 @@ def create_attribute(
     narrative: str,
     turn_no: int,
     max_cap: int,
+    duration: int = 0,
+    shield: bool = False,
+    freeze: bool = False,
+    per_turn: int = 0,
 ) -> Attribute:
     name = name.strip()[:MAX_NAME_LEN]
     value = max(1, int(value))
     cap = max(value, min(int(cap), max_cap))
+    duration = max(0, int(duration))
+    # 冻结类按“目标自己被跳过的回合数”计费，与全局回合号脱钩：
+    # duration=3 → 目标跳过 3 个自己的回合后解冻，不会提前消失。
+    charges = duration if freeze else 0
     return Attribute(
         attr_id=uuid.uuid4().hex[:10],
         owner_id=owner_id,
@@ -45,6 +53,11 @@ def create_attribute(
         consume_rule="",
         value=value,
         opened_turn=turn_no,
+        expires_turn=0 if freeze else (turn_no + duration - 1 if duration > 0 else 0),
+        shield=bool(shield),
+        freeze=bool(freeze),
+        charges=charges,
+        per_turn=int(per_turn),
     )
 
 
@@ -111,4 +124,9 @@ def seal_event(attr: Attribute) -> dict:
         "consume_rule": attr.consume_rule,
         "value": attr.value,
         "opened_turn": attr.opened_turn,
+        "expires_turn": attr.expires_turn,
+        "shield": attr.shield,
+        "freeze": attr.freeze,
+        "charges": attr.charges,
+        "per_turn": attr.per_turn,
     }

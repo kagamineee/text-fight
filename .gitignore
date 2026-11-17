@@ -7,10 +7,12 @@ __pycache__/
 # ---- 本地数据与密钥 ----
 data/
 agent/config.toml
+agent/config.saved.toml
 agent/key.txt
 *.db
 *.db-journal
 *.log
+logs/
 
 # ---- 前端 ----
 web/node_modules/

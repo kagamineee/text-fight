@@ -17,11 +17,11 @@ if errorlevel 1 (
     exit /b 1
 )
 for /f "delims=" %%v in ('python -c "import sys;print(sys.version.split()[0])"') do set PYVER=%%v
-echo [1/4] Python %PYVER% OK
+echo [1/5] Python %PYVER% OK
 
 REM ---- 2. Virtual env ----
 if not exist ".venv\Scripts\python.exe" (
-    echo [2/4] Creating virtual env .venv ...
+    echo [2/5] Creating virtual env .venv ...
     python -m venv .venv
     if errorlevel 1 (
         echo [ERROR] Failed to create virtual env.
@@ -29,13 +29,13 @@ if not exist ".venv\Scripts\python.exe" (
         exit /b 1
     )
 ) else (
-    echo [2/4] Virtual env found
+    echo [2/5] Virtual env found
 )
 
 REM ---- 3. Dependencies ----
 ".venv\Scripts\python.exe" -c "import fastapi, uvicorn, yaml, argon2" 2>nul
 if errorlevel 1 (
-    echo [3/4] Installing dependencies ...
+    echo [3/5] Installing dependencies ...
     ".venv\Scripts\python.exe" -m pip install -r server\requirements.txt
     if errorlevel 1 (
         echo [ERROR] Failed to install dependencies. Check your network.
@@ -43,12 +43,12 @@ if errorlevel 1 (
         exit /b 1
     )
 ) else (
-    echo [3/4] Dependencies ready
+    echo [3/5] Dependencies ready
 )
 
 REM ---- 4. Frontend build ----
 if not exist "web\dist\index.html" (
-    echo [4/4] Frontend build not found, building ...
+    echo [4/5] Frontend build not found, building ...
     where npm >nul 2>nul
     if errorlevel 1 (
         echo [WARN] Node.js not installed, cannot build frontend.
@@ -59,7 +59,16 @@ if not exist "web\dist\index.html" (
         popd
     )
 ) else (
-    echo [4/4] Frontend build ready
+    echo [4/5] Frontend build ready
+)
+
+REM ---- 5. Local AI proxy (same entry as the game) ----
+netstat -ano | findstr /r /c:":17666 .*LISTENING" >nul
+if errorlevel 1 (
+    echo [5/5] Starting local AI proxy ^(minimized window "yap-agent"^) ...
+    start "yap-agent" /min ".venv\Scripts\python.exe" agent\yap_agent.py --config "agent\config.toml"
+) else (
+    echo [5/5] Local AI proxy already running on port 17666
 )
 
 REM ---- Addresses ----
@@ -78,10 +87,18 @@ if not errorlevel 1 (
 echo ------------------------------------------
 echo   Friends in the same Tailnet can join with the address above.
 echo   Close this window to stop the server.
+echo   The AI proxy runs in the minimized "yap-agent" window; close it to stop AI.
 echo ------------------------------------------
 echo.
 
 start "" /b powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 3; Start-Process 'http://localhost:8000'"
-".venv\Scripts\python.exe" -m uvicorn server.app:app --host 0.0.0.0 --port 8000
+
+netstat -ano | findstr /r /c:":8000 .*LISTENING" >nul
+if errorlevel 1 (
+    ".venv\Scripts\python.exe" -m uvicorn server.app:app --host 0.0.0.0 --port 8000
+) else (
+    echo [INFO] Game server already running on port 8000.
+    echo        This window only started the AI proxy; you can close it.
+)
 
 pause

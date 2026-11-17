@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import shutil
+import os
 import sys
-import tempfile
-from pathlib import Path
 
 from .game import engine
 from .game.bots import BotBrain
@@ -40,11 +38,11 @@ class NullHub:
         return None
 
 
-async def run_one(data_dir: Path, bots: int, index: int) -> dict:
-    manager = RoomManager(data_dir, NullHub())
+async def run_one(bots: int, index: int) -> dict:
+    manager = RoomManager(NullHub())
     room, host = manager.create_room(f"观察者{index}", "test-pass")
     # 房主也是人类席位，自动局里让它同样由假人脑驱动
-    room.bot_brains[host.player_id] = BotBrain(seed=0xB0B, preset_index=0)
+    room.bot_brains[host.player_id] = BotBrain(seed=0xB0B)
     host.ready = True
     for _ in range(bots):
         manager.add_bot(room, host.player_id)
@@ -79,30 +77,27 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="文字角斗场 · 自动对局")
     parser.add_argument("--games", type=int, default=5)
     parser.add_argument("--bots", type=int, default=4)
-    parser.add_argument("--keep", action="store_true", help="保留临时数据目录")
     args = parser.parse_args()
+
+    # 自动局只验证引擎，默认不调用裁判 AI
+    os.environ.setdefault("YAP_JUDGE_AI", "0")
 
     # 自动局不需要"思考时间"
     engine.BOT_THINK_MIN = 0.0
     engine.BOT_THINK_MAX = 0.0
 
-    data_dir = Path(tempfile.mkdtemp(prefix="yap-autoplay-"))
     failures = 0
-    try:
-        for i in range(args.games):
-            try:
-                result = await run_one(data_dir / f"g{i}", args.bots, i)
-                print(
-                    f"[{i + 1}/{args.games}] 回合 {result['turns']:>3} | "
-                    f"事件 {result['events']:>5} | 幸存 {result['alive']} | "
-                    f"胜者 {result['winner']}"
-                )
-            except Exception as exc:  # noqa: BLE001
-                failures += 1
-                print(f"[{i + 1}/{args.games}] 失败：{exc}")
-    finally:
-        if not args.keep:
-            shutil.rmtree(data_dir, ignore_errors=True)
+    for i in range(args.games):
+        try:
+            result = await run_one(args.bots, i)
+            print(
+                f"[{i + 1}/{args.games}] 回合 {result['turns']:>3} | "
+                f"事件 {result['events']:>5} | 幸存 {result['alive']} | "
+                f"胜者 {result['winner']}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            failures += 1
+            print(f"[{i + 1}/{args.games}] 失败：{exc}")
 
     print(f"\n完成：{args.games - failures}/{args.games} 局通过")
     if failures:

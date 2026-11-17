@@ -15,7 +15,6 @@ class IntensityRules:
     cap_base: int
     cap_growth: int
     ceiling_factor: float
-    level_words: dict[str, float]
 
     def cap(self, turn_no: int) -> int:
         """软上限曲线：随回合增长的力量曲线。"""
@@ -25,51 +24,10 @@ class IntensityRules:
         """硬上限：服务端强制钳制的绝对边界。"""
         return max(1, int(round(self.cap(turn_no) * self.ceiling_factor)))
 
-    def level_ratio(self, hint: str | None) -> float | None:
-        if not hint:
-            return None
-        return self.level_words.get(hint.strip())
-
-
-def parse_intensity_hint(
-    hint: str | None, rules: IntensityRules, turn_no: int, default_ratio: float
-) -> float:
-    """把玩家的"意图方言"解析为基准影响力。
-
-    支持三种输入：纯数字 / 程度词 / 未提供（按动作类型默认比例）。
-    注意：这只是基准值，最终仍会被 clamp_to_hard 钳制。
-    """
-    cap = rules.cap(turn_no)
-    if hint:
-        text = hint.strip()
-        if text.isdigit():
-            return float(int(text))
-        ratio = rules.level_ratio(text)
-        if ratio is not None:
-            return cap * ratio
-    return cap * default_ratio
-
-
-def counter_factor(counter_list: list[dict]) -> float:
-    """P0 简化对冲：每条有效对冲削减 15%，最多 45%。
-
-    P1 起由裁判做语义评估，但此函数保留为兜底路径。
-    """
-    n = len([c for c in counter_list if c.get("kind") == "counter"])
-    return max(0.55, 1.0 - 0.15 * n)
-
 
 def clamp_to_hard(value: float, turn_no: int, rules: IntensityRules) -> float:
     """服务端终审：任何数值不得越过硬上限。"""
     return max(0.0, min(float(value), float(rules.hard(turn_no))))
-
-
-def split_shares(total: float, count: int) -> list[float]:
-    """多目标均摊，保证总和不超过 total。"""
-    if count <= 0:
-        return []
-    share = total / count
-    return [share] * count
 
 
 def effective_defense(attributes: list) -> tuple[float, list]:
@@ -89,6 +47,81 @@ def effective_defense(attributes: list) -> tuple[float, list]:
 def resolve_damage(share: float, defense: float) -> int:
     """底线：至少造成 1 点伤害，杜绝"我毫发无伤"。"""
     return max(1, int(round(share - defense)))
+
+
+def clamp_hp_effects(
+    effects: list[dict],
+    hp: dict[str, int],
+    hp_max: dict[str, int],
+    hard: int,
+) -> tuple[list[dict], bool]:
+    """服务端终审：把裁判给出的 HP 变化压回合法范围。
+
+    - 单项伤害不超过目标剩余 HP，治疗不超过缺口
+    - 本回合总伤害、总治疗分别不超过 hard(t)
+    - 未知玩家直接丢弃
+    返回 (钳制后的效果, 是否发生过钳制)。
+    """
+    current = dict(hp)
+    out: list[dict] = []
+    clamped = False
+    damage_budget = max(0, int(hard))
+    heal_budget = max(0, int(hard))
+
+    for effect in effects:
+        pid = str(effect.get("player_id", ""))
+        if pid not in current:
+            clamped = True
+            continue
+        try:
+            delta = int(effect.get("hp_delta", 0))
+        except (TypeError, ValueError):
+            clamped = True
+            continue
+        if delta == 0:
+            continue
+        if delta < 0:
+            allowed = min(-delta, damage_budget, max(0, current[pid]))
+            if allowed <= 0:
+                clamped = True
+                continue
+            if allowed != -delta:
+                clamped = True
+            damage_budget -= allowed
+            current[pid] -= allowed
+            entry = {"player_id": pid, "hp_delta": -allowed}
+            if effect.get("pierce"):
+                entry["pierce"] = True
+            out.append(entry)
+        else:
+            gap = max(0, int(hp_max.get(pid, current[pid])) - current[pid])
+            allowed = min(delta, heal_budget, gap)
+            if allowed <= 0:
+                clamped = True
+                continue
+            if allowed != delta:
+                clamped = True
+            heal_budget -= allowed
+            current[pid] += allowed
+            out.append({"player_id": pid, "hp_delta": allowed})
+    return out, clamped
+
+
+def clamp_attr_value(value: int, cap: int) -> int:
+    """属性现值永远落在 [0, cap]。"""
+    return max(0, min(int(cap), int(value)))
+
+
+def clamp_new_attr(
+    value: int,
+    cap: int,
+    max_initial: int,
+    max_cap: int,
+) -> tuple[int, int]:
+    """新建属性的数值边界：value ∈ [1, max_initial]，cap ∈ [value, max_cap]。"""
+    value = max(1, min(int(max_initial), int(value)))
+    cap = max(value, min(int(max_cap), int(cap)))
+    return value, cap
 
 
 def apply_armor_wear(used_attrs: list, absorbed: float) -> list[dict]:

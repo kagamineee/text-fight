@@ -1,6 +1,6 @@
 """房间管理：口令、房号、限流、生命周期。
 
-P0 的房间身份只活在内存 + 事件日志；重启由 RoomManager 依据事件重建。
+房间只活在内存里，不落库、不恢复；服务重启即清空。
 """
 
 from __future__ import annotations
@@ -9,18 +9,14 @@ import asyncio
 import logging
 import time
 import uuid
-from pathlib import Path
 from typing import Optional
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-from .game.bots import BotBrain
 from .game.engine import Room
-from .game.models import Attribute, LedgerEntry, Phase, Player
+from .game.models import Player
 from .packs.loader import Pack, load_packs
-from .store.replay import rebuild
-from .store.store import Store
 
 logger = logging.getLogger("yap.rooms")
 
@@ -39,87 +35,13 @@ class RoomError(Exception):
 
 
 class RoomManager:
-    def __init__(self, data_dir: Path, hub) -> None:
-        self.store = Store(data_dir / "arena.db")
+    def __init__(self, hub) -> None:
         self.hub = hub
         self.packs: dict[str, Pack] = load_packs()
         self.default_pack_id = next(iter(self.packs))
         self.rooms: dict[str, Room] = {}
         self._hasher = PasswordHasher()
         self._join_failures: dict[str, list[float]] = {}
-
-    # ---------------------------------------------------------------- 启动恢复
-    async def restore(self) -> None:
-        restored = 0
-        for room_id in self.store.list_room_ids():
-            meta = self.store.room_meta(room_id)
-            if meta is None or meta["closed_at"] is not None:
-                continue
-            pack = self.packs.get(meta["pack_id"])
-            if pack is None:
-                logger.warning("房间 %s 的扩展包 %s 不存在，跳过恢复", room_id, meta["pack_id"])
-                continue
-            events = self.store.events(room_id)
-            if not events:
-                continue
-            state = rebuild(events)
-            room = Room(
-                room_id=room_id,
-                code=meta["code"],
-                password_hash=meta["password_hash"],
-                pack=pack,
-                host_id=meta["host_player_id"],
-                store=self.store,
-                hub=self.hub,
-            )
-            room.turn_no = state["turn_no"]
-            room.over = state["over"]
-            room.winner = state["winner"]
-            room.current_actor = state.get("current_actor")
-            for pid in state["order"]:
-                data = state["players"][pid]
-                player = Player(
-                    player_id=pid,
-                    name=data["name"],
-                    seat=data["seat"],
-                    kind=data["kind"],
-                    hp=data["hp"],
-                    hp_max=data["hp_max"],
-                    alive=data["alive"],
-                    connected=False,
-                    ready=False,
-                    hp_peak=data["hp_peak"],
-                    survived_turns=data["survived_turns"],
-                )
-                for attr in data["attributes"].values():
-                    player.attributes[attr["attr_id"]] = Attribute(**attr)
-                room.players[pid] = player
-                room.order.append(pid)
-                if data["kind"] == "bot":
-                    room.bot_brains[pid] = BotBrain(
-                        seed=hash(pid) & 0xFFFF, preset_index=data["seat"]
-                    )
-            room.ledger = [
-                LedgerEntry(
-                    seq=ev.seq,
-                    turn_no=ev.turn_no,
-                    actor=ev.actor,
-                    type=ev.type,
-                    content=ev.content,
-                    intensity=ev.intensity,
-                    status=ev.status,
-                    payload=ev.payload,
-                )
-                for ev in events[_last_reset_index(events):]
-            ]
-            room.seq = events[-1].seq
-            self.rooms[room_id] = room
-            restored += 1
-            if state.get("started") and not room.over:
-                room.phase = Phase.DECLARE
-                room.start(resume=True)
-        if restored:
-            logger.info("已从事件日志恢复 %d 个房间", restored)
 
     # ---------------------------------------------------------------- 限流
     def _check_join_limit(self, source: str) -> None:
@@ -145,12 +67,10 @@ class RoomManager:
             password_hash=password_hash,
             pack=self.packs[self.default_pack_id],
             host_id="",
-            store=self.store,
             hub=self.hub,
         )
         host = room.add_player(host_name, kind="human", pid=player_id)
         room.host_id = host.player_id
-        self.store.create_room(room_id, code, password_hash, room.pack.id, host.player_id)
         self.rooms[room_id] = room
         return room, host
 
@@ -200,13 +120,17 @@ class RoomManager:
         raise RoomError("INTERNAL", "房号生成失败，请重试")
 
     # ---------------------------------------------------------------- 大厅操作
-    def add_bot(self, room: Room, requester: str) -> Player:
+    def add_bot(
+        self, room: Room, requester: str, difficulty: str = "normal"
+    ) -> Player:
         self._require_host(room, requester)
         self._require_lobby(room)
         if len(room.players) >= MAX_SEATS:
             raise RoomError("ROOM_FULL", "房间已满")
         index = sum(1 for p in room.players.values() if p.kind == "bot") + 1
-        return room.add_player(f"假人-{index}", kind="bot")
+        return room.add_player(
+            f"假人-{index}", kind="bot", difficulty=difficulty
+        )
 
     def remove_player(self, room: Room, requester: str, target_id: str) -> None:
         self._require_host(room, requester)
@@ -244,6 +168,9 @@ class RoomManager:
 
     async def return_lobby(self, room: Room, requester: str) -> None:
         self._require_host(room, requester)
+        if room.phase.value == "lobby" and not room.over:
+            # 已经在房间状态（例如另一个标签页先点了），直接补发状态即可
+            return
         if not room.over:
             raise RoomError("WRONG_PHASE", "这局还没结束")
         await room.reset_for_lobby()
@@ -268,14 +195,4 @@ class RoomManager:
                         room._over_since = now
                     elif now - left > 24 * 3600:
                         await room.stop()
-                        self.store.close_room(room_id)
                         del self.rooms[room_id]
-
-
-def _last_reset_index(events: list) -> int:
-    """同房间可能连打多局，对局情况只保留最近一局。"""
-    start = 0
-    for i, ev in enumerate(events):
-        if (ev.payload or {}).get("kind") == "lobby_returned":
-            start = i + 1
-    return start

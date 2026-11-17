@@ -3,7 +3,7 @@ name: 无名角斗场
 description: 数值基线包。一座没有名字的角斗场，规则只有一条——活到最后。
 
 hp:
-  base: 40
+  base: 100
   regen: 5
 
 intensity:
@@ -17,7 +17,7 @@ intensity:
     致命: 1.6
 
 attributes:
-  max_count: 3
+  max_count: 10
   max_initial: 10
   max_cap: 30
   max_exchange_rate: 2.0

@@ -51,7 +51,7 @@
 
 | ID | 任务 | 内容 | 交付物 |
 |---|---|---|---|
-| P1-T1 | yap-agent 代理 | 单文件代理：config、/health、/v1/chat/completions 透传（SSE 流式）、Origin 白名单、run-agent.bat、config.example.toml | `agent/yap_agent.py` |
+| P1-T1 | yap-agent 代理 | 单文件代理：config、/health、/v1/chat/completions 透传（SSE 流式）、Origin 白名单、由 run.bat 一并启动、config.example.toml | `agent/yap_agent.py` |
 | P1-T2 | 前端代理接入 | 设置页（base_url/model 显示/测试连接）、牌桌代理状态徽标、离线降级提示 | `web/` 设置与状态组件 |
 | P1-T3 | 玩家 AI 草稿 | 轮到自己时自动（或按钮触发）向本机代理请求宣言草稿，流式渲染、可编辑、提交 | 前端 prompt 组装 + 流式 UI |
 | P1-T4 | 裁判 AI 管线 | 上下文组装器、裁判提示词、结构化输出 schema、校验重试、降级回落 stub | `server/game/judge_ai.py` |
@@ -65,31 +65,35 @@
 
 ## 3. yap-agent 规格
 
-### 3.1 配置（agent/config.toml，example 随仓库）
+### 3.1 配置（游戏界面填写，无需手改文件）
+
+第一次使用：运行 `run.bat`（游戏服务和 AI 代理一起启动），在游戏右上角点「AI 未连接 / AI 待配置」，选服务商、填 API Key，点「测试连接」→「保存」。
+
+界面会把配置写进 `agent/config.saved.toml`（已在 `.gitignore`），代理启动时自动读取。`agent/config.toml` 只在需要改端口、白名单、口令等高级项时才用：
 
 ```toml
-base_url = "https://api.example.com/v1"
-model = "model-name"
-key_env = "YAP_KEY"          # 二选一：从环境变量读密钥
-# key_file = "key.txt"       # 或从文件读
 port = 17666
 allowed_origins = ["http://localhost:8000"]   # 玩家自行追加自己的房间地址
 # passcode = "可选口令"
 ```
 
+优先级：`config.saved.toml` 覆盖 `config.toml`；两个文件都可以不存在，代理会以「待配置」状态启动。
+
 ### 3.2 端点
 
 | 端点 | 行为 |
 |---|---|
-| `GET /health` | 返回 `{ok, model, has_key}`；不泄露密钥内容 |
-| `POST /v1/chat/completions` | 透传上游（注入 Authorization）；支持 `stream:true` 逐块回传 SSE；流式失败时返回结构化错误 |
+| `GET /health` | 返回 `{ok, configured, upstream, model, has_key, key_hint}`；不泄露密钥内容 |
+| `POST /config` | 保存 `base_url` / `model` / `api_key` 到 `config.saved.toml`；要求来源在白名单内；`api_key` 留空表示不修改 |
+| `POST /v1/test` | 用当前配置真实调用一次上游，验证地址、模型与密钥 |
+| `POST /v1/chat/completions` | 透传上游（注入 Authorization 与默认 model）；支持 `stream:true` 逐块回传 SSE |
 
 安全要求：
 
 - 绑定 `127.0.0.1`；CORS 校验 `Origin ∈ allowed_origins`，不匹配一律 403。
-- 密钥只从 `key_env` / `key_file` 读取，**不接受请求体传入**。
+- 密钥由界面写进本机文件，只保存在本地；不随对局上报服务器。
 - 请求体大小上限 2MB（防滥用）；单请求超时 120s。
-- `config.toml`、`key.txt` 在 `.gitignore` 中。
+- `config.toml`、`config.saved.toml`、`key.txt` 在 `.gitignore` 中。
 
 ### 3.3 房主侧
 
@@ -244,7 +248,7 @@ attribute delta 后 value ∈ [0, cap]
 
 ## 9. 验收清单（出口条件）
 
-- [ ] `run-agent.bat` 启动代理；设置页「测试连接」显示模型名与密钥状态；Origin 不在白名单时浏览器请求被 403
+- [ ] `run.bat` 启动后代理自动运行；设置页「测试连接」显示模型名与密钥状态；Origin 不在白名单时浏览器请求被 403
 - [ ] 轮到玩家时 AI 草稿流式生成、可编辑、提交的是玩家确认文本；预生成（他人回合提前起草）可用
 - [ ] 真模型裁判完成一次裁决：三段式输出、数值、叙事、账本条目全部正确入库
 - [ ] 构造裁判超发用例（mock 返回 intensity=999）：实际结算被钳回 hard(t)，账本带 `[服务端钳制]` 标记

@@ -11,13 +11,25 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from . import debug_log  # [TEMP-LOG] 临时调试日志，稳定后与调用点一起删除
 from .formulas import IntensityRules, clamp_to_hard
 from .models import Declaration, Player
+
+DURATION_PATTERN = re.compile(r"(\d+)\s*(?:个)?回合")
+FREEZE_WORDS = (
+    "冰冻", "冻结", "冻住", "冻僵", "眩晕", "晕住", "束缚", "麻痹",
+    "沉默", "定身", "石化", "无法行动", "动弹不得",
+)
+SHIELD_WORDS = ("免伤", "隐匿", "无敌", "免疫伤害", "完全免疫", "不受到任何伤害")
+PER_TURN_WORDS = ("每回合", "中毒", "剧毒", "毒发", "灼烧", "流血")
 
 DAMAGE_WORDS = (
     "打", "揍", "轰", "砍", "劈", "刺", "戳", "踢", "踹", "撞", "摔", "扔", "砸",
     "烧", "冻", "电", "毒", "咬", "掐", "勒", "爆", "炸", "撕", "斩", "射", "扫",
     "拍", "抽", "敲", "压", "碾", "吞", "诅咒", "重创", "暴击", "捅",
+    "重击", "重拳", "出拳", "挥拳", "攻击", "进击", "出手", "伤害", "一击", "痛击",
+    "锤", "抡", "扫堂", "肘击", "膝击", "抓", "挠", "逼", "围攻", "狙击", "射击",
+    "冰冻", "点燃", "灼烧", "麻痹", "击中", "命中", "杀伤", "重锤",
 )
 
 HEAL_WORDS = (
@@ -36,7 +48,10 @@ CREATE_WORDS = (
 
 UP_WORDS = ("提升", "增强", "强化", "上涨", "变强", "加厚", "增长", "暴涨", "翻倍", "提升到")
 DOWN_WORDS = ("削弱", "降低", "衰减", "下降", "变弱", "削减", "打薄", "废掉", "封印", "打碎")
-REMOVE_WORDS = ("废掉", "舍弃", "忘掉", "删除", "不要了", "丢掉", "打碎", "封印")
+REMOVE_WORDS = (
+    "废掉", "舍弃", "忘掉", "删除", "不要了", "丢掉", "打碎", "封印",
+    "摧毁", "破坏", "剥夺", "夺走", "偷走", "偷取", "窃取", "化解", "解除", "拍碎", "碾碎",
+)
 
 DEFENSE_HINTS = ("盾", "甲", "护", "防", "壳", "壁", "罩", "铁布衫", "龟息")
 ATTACK_HINTS = ("拳", "剑", "刀", "爪", "牙", "火", "雷", "冰", "毒", "掌", "枪")
@@ -69,7 +84,6 @@ def _magnitude(text: str, pack, turn_no: int) -> float:
         cap_base=pack.intensity.cap_base,
         cap_growth=pack.intensity.cap_growth,
         ceiling_factor=pack.intensity.ceiling_factor,
-        level_words=pack.intensity.level_words,
     )
     cap = rules.cap(turn_no)
     match = NUMBER_PATTERN.search(text)
@@ -149,16 +163,34 @@ def adjudicate(
     amount = int(round(_magnitude(text, pack, turn_no)))
     if wants_damage:
         amount = max(1, amount) if targets else 0
+        if targets:
+            # 攻击类属性加成：兜底裁判没有语义能力，硬数值直接叠加后钳制
+            atk_total = sum(
+                a.value
+                for a in actor.attributes.values()
+                if a.attr_type == "attack" and a.value > 0
+            )
+            if atk_total:
+                rules = IntensityRules(
+                    cap_base=pack.intensity.cap_base,
+                    cap_growth=pack.intensity.cap_growth,
+                    ceiling_factor=pack.intensity.ceiling_factor,
+                )
+                amount = int(clamp_to_hard(amount + atk_total, turn_no, rules))
 
     result = Verdict()
     sentences: list[str] = []
 
     if targets and wants_damage and not wants_heal:
+        pierce = "无视" in text
         for target in targets:
             actual = min(amount, target.hp)
             if actual <= 0:
                 continue
-            result.effects.append({"player_id": target.player_id, "hp_delta": -actual})
+            entry = {"player_id": target.player_id, "hp_delta": -actual}
+            if pierce:
+                entry["pierce"] = True
+            result.effects.append(entry)
             if target.player_id == actor.player_id:
                 sentences.append(f"{actor.name} 把自己弄掉了 {actual} 点血。")
             else:
@@ -181,17 +213,32 @@ def adjudicate(
         if existing is None and len(actor.attributes) < pack.attributes.max_count:
             attr_type = _attr_type(attr_name, text)
             value = max(1, min(amount, pack.attributes.max_initial))
-            result.attr_changes.append(
-                {
-                    "owner": actor.player_id,
-                    "name": attr_name,
-                    "attr_type": attr_type,
-                    "value": value,
-                    "cap": min(max(value * 2, value), pack.attributes.max_cap),
-                    "narrative": text[:60],
-                    "created": True,
-                }
-            )
+            entry = {
+                "owner": actor.player_id,
+                "name": attr_name,
+                "attr_type": attr_type,
+                "value": value,
+                "cap": min(max(value * 2, value), pack.attributes.max_cap),
+                "narrative": text[:60],
+                "created": True,
+            }
+            duration_match = DURATION_PATTERN.search(text)
+            duration = int(duration_match.group(1)) if duration_match else 2
+            if any(w in text for w in FREEZE_WORDS):
+                # 冻结类加在目标身上，方向与攻防相反
+                entry["freeze"] = True
+                entry["duration"] = duration
+                if targets and targets[0].player_id != actor.player_id:
+                    entry["owner"] = targets[0].player_id
+            elif any(w in text for w in SHIELD_WORDS):
+                entry["shield"] = True
+                entry["duration"] = duration
+            elif any(w in text for w in PER_TURN_WORDS) and targets:
+                entry["per_turn"] = -value
+                entry["duration"] = duration
+                if targets[0].player_id != actor.player_id:
+                    entry["owner"] = targets[0].player_id
+            result.attr_changes.append(entry)
             sentences.append(f"{actor.name} 多了个属性「{attr_name}」。")
 
     for player in players.values():
@@ -235,4 +282,7 @@ def adjudicate(
         sentences.append(f"{actor.name} 说了一通，场上没人掉血。")
 
     result.narrative = "".join(sentences)
+    debug_log.log("stub_verdict", turn=turn_no, actor=actor.name,
+                  effects=result.effects, attr_changes=result.attr_changes,
+                  narrative=result.narrative[:200])  # [TEMP-LOG]
     return result

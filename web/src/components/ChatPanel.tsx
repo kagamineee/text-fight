@@ -6,11 +6,19 @@ export default function ChatPanel() {
   const game = useGame()
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
+  // 回看历史时不被新消息拉回底部，贴底时才跟随
+  const stickRef = useRef(true)
 
   useEffect(() => {
     const el = listRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight
   }, [game.chats])
+
+  const onScroll = () => {
+    const el = listRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+  }
 
   const submit = () => {
     const value = text.trim()
@@ -24,7 +32,7 @@ export default function ChatPanel() {
       <div className="panel-head">
         <span>桌面频道</span>
       </div>
-      <div className="chat-list" ref={listRef}>
+      <div className="chat-list" ref={listRef} onScroll={onScroll}>
         {game.chats.map((c) => (
           <div key={c.id} className={`chat-line ${c.own ? 'own' : ''}`}>
             <span className="chat-name">{c.name}</span>

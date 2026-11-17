@@ -1,0 +1,31 @@
+# yap-agent 配置示例（可选）
+# 现在可以直接在游戏界面的「AI 设置」里填写上游、模型和密钥，
+# 界面保存的内容会写入 agent/config.saved.toml，不会覆盖本文件。
+# 只有需要改端口、来源白名单等高级项时才需要复制本文件为 agent/config.toml。
+# 若 agent/config.saved.toml 存在，界面保存的 base_url / model / api_key 会覆盖本文件。
+
+# 上游模型的 OpenAI 兼容地址（结尾不要带 /chat/completions）
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+# 密钥二选一：环境变量（推荐）或本地文件
+key_env = "YAP_KEY"
+# key_file = "key.txt"
+
+# 本地监听端口，服务端默认也连这个端口
+port = 17666
+
+# 允许访问代理的页面来源，支持 * 通配。
+# 如果通过局域网 IP 访问房间，把对应地址加进来，例如 "http://192.168.1.5:8000"。
+allowed_origins = [
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+    "http://192.168.*:*",
+]
+
+# 可选口令：设置后，请求必须带 X-Yap-Passcode 头。
+# 页面在「AI 代理设置」里填同一个口令；服务端裁判需要设置环境变量 YAP_AGENT_PASSCODE。
+# passcode = ""
+
+# 单次上游请求超时（秒）
+timeout_s = 120

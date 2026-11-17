@@ -30,17 +30,15 @@ logging.basicConfig(
 logger = logging.getLogger("yap.app")
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
 DIST_DIR = ROOT / "web" / "dist"
 
 hub = Hub()
-manager = RoomManager(DATA_DIR, hub)
+manager = RoomManager(hub)
 sessions: dict[str, dict] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await manager.restore()
     task = asyncio.create_task(manager.cleanup_loop())
     logger.info("服务已启动，内置扩展包：%s", ", ".join(manager.packs))
     try:
@@ -119,13 +117,17 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def on_disconnect(conn: Conn) -> None:
     room = room_of(conn)
     if conn.player_id:
-        await hub.unbind(conn.player_id, conn.room_id)
+        unbound = await hub.unbind(conn.player_id, conn.room_id, conn.ws)
+        if not unbound:
+            # 同一玩家已有新连接接手（刷新/重连），旧连接收尾不能动房间席位
+            logger.info("旧连接已由新连接接替，跳过房间清理：%s", conn.player_id)
+            return
     if room and conn.player_id and conn.player_id in room.players:
         player = room.players[conn.player_id]
         if room.phase.value == "lobby":
             room.remove_player(conn.player_id)
-            if conn.token:
-                manager.store.set_session_room(conn.token, None)
+            if conn.token in sessions:
+                sessions[conn.token]["room_id"] = None
         else:
             player.connected = False
         await room.broadcast_state()
@@ -140,8 +142,7 @@ async def dispatch(conn: Conn, msg) -> None:
         conn.player_id = player_id
         conn.token = token
         conn.nickname = msg.name
-        sessions[token] = {"player_id": player_id, "room_id": None}
-        manager.store.save_session(token, player_id, None, msg.name)
+        sessions[token] = {"player_id": player_id, "room_id": None, "name": msg.name}
         await hub.bind(player_id, None, conn.ws)
         await conn.ws.send_json(
             {"type": "session", "token": token, "player_id": player_id, "name": msg.name}
@@ -150,11 +151,6 @@ async def dispatch(conn: Conn, msg) -> None:
 
     if t == "reconnect":
         data = sessions.get(msg.token)
-        if data is None:
-            row = manager.store.load_session(msg.token)
-            if row is not None:
-                data = {"player_id": row["player_id"], "room_id": row["room_id"]}
-                sessions[msg.token] = data
         if not data:
             await err(conn, "AUTH_FAILED", "会话已失效，请重新加入房间", fatal=True)
             return
@@ -168,8 +164,12 @@ async def dispatch(conn: Conn, msg) -> None:
             return
         player = room.players.get(conn.player_id)
         if player is None:
-            await err(conn, "ROOM_NOT_FOUND", "席位已不存在", fatal=True)
-            return
+            if room.phase.value == "lobby" and not room.over:
+                # 刷新页面时旧连接的关闭事件会先清掉大厅席位，凭会话原样恢复
+                player = room.add_player(data.get("name") or "玩家", kind="human", pid=conn.player_id)
+            else:
+                await err(conn, "ROOM_NOT_FOUND", "席位已不存在", fatal=True)
+                return
         player.connected = True
         await conn.ws.send_json(
             {
@@ -194,9 +194,8 @@ async def dispatch(conn: Conn, msg) -> None:
         if msg.name.strip():
             conn.nickname = msg.name.strip()
         room, host = manager.create_room(conn.nickname, msg.password, conn.player_id)
-        manager.store.save_session(conn.token, conn.player_id, room.room_id, conn.nickname)
         conn.room_id = room.room_id
-        sessions[conn.token]["room_id"] = room.room_id
+        sessions[conn.token].update(room_id=room.room_id, name=conn.nickname)
         await hub.move(conn.player_id, room.room_id)
         await room.broadcast_state()
         await conn.ws.send_json(room.snapshot_for(conn.player_id))
@@ -212,8 +211,7 @@ async def dispatch(conn: Conn, msg) -> None:
             msg.code, msg.password, conn.nickname, conn.source, conn.player_id
         )
         conn.room_id = room.room_id
-        sessions[conn.token]["room_id"] = room.room_id
-        manager.store.save_session(conn.token, conn.player_id, room.room_id, conn.nickname)
+        sessions[conn.token].update(room_id=room.room_id, name=conn.nickname)
         await hub.move(conn.player_id, room.room_id)
         await room.broadcast_state()
         await conn.ws.send_json(room.snapshot_for(conn.player_id))
@@ -232,12 +230,11 @@ async def dispatch(conn: Conn, msg) -> None:
         await hub.unbind(conn.player_id, room.room_id)
         conn.room_id = None
         sessions[conn.token]["room_id"] = None
-        manager.store.set_session_room(conn.token, None)
         await room.broadcast_state()
         return
 
     if t == "add_bot":
-        manager.add_bot(room, conn.player_id)
+        manager.add_bot(room, conn.player_id, msg.difficulty)
         await room.broadcast_state()
         return
 

@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Optional
 
 from . import attributes as attr_mod
-from . import judge
+from . import debug_log  # [TEMP-LOG] 临时调试日志，稳定后与调用点一起删除
+from . import judge_ai, summary
 from .bots import BotBrain
+from .formulas import apply_armor_wear, effective_defense, resolve_damage
 from .models import (
+    Attribute,
     Declaration,
     LedgerEntry,
     LedgerType,
@@ -71,7 +75,6 @@ class Room:
         password_hash: str,
         pack: Pack,
         host_id: str,
-        store,
         hub,
     ) -> None:
         self.room_id = room_id
@@ -79,7 +82,6 @@ class Room:
         self.password_hash = password_hash
         self.pack = pack
         self.host_id = host_id
-        self.store = store
         self.hub = hub
 
         self.players: dict[str, Player] = {}
@@ -94,12 +96,26 @@ class Room:
         self.deadline: Optional[float] = None
         self.bot_brains: dict[str, BotBrain] = {}
 
+        self.judge_base_url = os.environ.get(
+            "YAP_JUDGE_URL", judge_ai.DEFAULT_AGENT_URL
+        )
+        self.judge_model = os.environ.get("YAP_JUDGE_MODEL", "")
+        self.world_summary = ""
+        self.summary_turn = 0
+        self._summary_task: Optional[asyncio.Task] = None
+
         self._collector = Collector()
         self._runner: Optional[asyncio.Task] = None
         self._closed = False
 
     # ------------------------------------------------------------------ 玩家
-    def add_player(self, name: str, kind: str = "human", pid: str | None = None) -> Player:
+    def add_player(
+        self,
+        name: str,
+        kind: str = "human",
+        pid: str | None = None,
+        difficulty: str = "normal",
+    ) -> Player:
         pid = pid or uuid.uuid4().hex[:12]
         seat = len(self.order)
         player = Player(
@@ -112,11 +128,14 @@ class Room:
             appeals_left=self.pack.appeal.count,
             hp_peak=self.pack.hp.base,
             ready=(kind == "bot"),
+            bot_difficulty=difficulty if kind == "bot" else "",
         )
         self.players[pid] = player
         self.order.append(pid)
         if kind == "bot":
-            self.bot_brains[pid] = BotBrain(seed=hash(pid) & 0xFFFF, preset_index=seat)
+            self.bot_brains[pid] = BotBrain(
+                seed=hash(pid) & 0xFFFF, difficulty=difficulty
+            )
         self._record(
             LedgerType.SYSTEM,
             f"{name} 加入了房间。",
@@ -127,6 +146,7 @@ class Room:
                 "name": name,
                 "seat": seat,
                 "player_kind": kind,
+                "bot_difficulty": player.bot_difficulty,
                 "hp": player.hp,
                 "hp_max": player.hp_max,
             },
@@ -164,28 +184,18 @@ class Room:
     ) -> LedgerEntry:
         data = dict(payload or {})
         data.setdefault("kind", type_.value)
-        ev = self.store.append(
-            self.room_id,
-            self.turn_no,
-            actor,
-            type_.value,
-            content,
-            intensity,
-            data,
-            status,
-        )
+        self.seq += 1
         entry = LedgerEntry(
-            seq=ev.seq,
-            turn_no=ev.turn_no,
-            actor=ev.actor,
-            type=ev.type,
-            content=ev.content,
-            intensity=ev.intensity,
-            status=ev.status,
+            seq=self.seq,
+            turn_no=self.turn_no,
+            actor=actor,
+            type=type_.value,
+            content=content,
+            intensity=intensity,
+            status=status,
             payload=data,
         )
         self.ledger.append(entry)
-        self.seq = ev.seq
         return entry
 
     # ------------------------------------------------------------------ 广播
@@ -206,6 +216,32 @@ class Room:
     async def broadcast_state(self) -> None:
         await self._broadcast(self.room_state())
 
+    def _ranking(self) -> list[Player]:
+        return sorted(
+            self.players.values(),
+            key=lambda p: (p.alive, p.hp, p.survived_turns),
+            reverse=True,
+        )
+
+    def result_view(self) -> Optional[dict]:
+        """结算视图：刷新或断线重连后仍能还原胜者与排名。"""
+        if not self.over:
+            return None
+        winner = self.players.get(self.winner) if self.winner else None
+        return {
+            "winner_name": winner.name if winner else None,
+            "ranking": [
+                {
+                    "player_id": p.player_id,
+                    "name": p.name,
+                    "alive": p.alive,
+                    "hp": p.hp,
+                    "survived_turns": p.survived_turns,
+                }
+                for p in self._ranking()
+            ],
+        }
+
     # ------------------------------------------------------------------ 视图
     def room_state(self) -> dict:
         return {
@@ -222,6 +258,8 @@ class Room:
             "current_actor": self.current_actor,
             "deadline": self.deadline,
             "over": self.over,
+            "result": self.result_view(),
+            "world_summary": self.world_summary,
         }
 
     def snapshot_for(self, pid: str) -> dict:
@@ -275,6 +313,11 @@ class Room:
         self.current_actor = None
         self.deadline = None
         self.ledger = []
+        if self._summary_task and not self._summary_task.done():
+            self._summary_task.cancel()
+        self._summary_task = None
+        self.world_summary = ""
+        self.summary_turn = 0
         for player in self.players.values():
             player.hp = self.pack.hp.base
             player.hp_max = self.pack.hp.base
@@ -321,6 +364,113 @@ class Room:
                 return player
         return alive[0]
 
+    async def _expire_attributes(self, alive: list[Player]) -> None:
+        """清理到期的限时属性（例如"持续 2 回合"的护盾）。"""
+        expired: list[tuple[Player, Attribute]] = []
+        for p in alive:
+            for attr in list(p.attributes.values()):
+                if attr.expires_turn and self.turn_no > attr.expires_turn:
+                    expired.append((p, attr))
+        if not expired:
+            return
+        for p, attr in expired:
+            p.attributes.pop(attr.attr_id, None)
+            self._record(
+                LedgerType.SYSTEM,
+                f"{p.name} 的「{attr.name}」到时限，消失了。",
+                payload={
+                    "kind": "attribute_expired",
+                    "owner_id": p.player_id,
+                    "attr_id": attr.attr_id,
+                    "name": attr.name,
+                },
+            )
+            await self._broadcast(
+                {
+                    "type": "attribute_removed",
+                    "player_id": p.player_id,
+                    "player_name": p.name,
+                    "name": attr.name,
+                    "reason": "expired",
+                }
+            )
+        await self.broadcast_state()
+
+    async def _run_per_turn(self, alive: list[Player]) -> list[Player]:
+        """周期效果结算：带 per_turn 的属性（中毒、灼烧、持续回复等）每回合自动生效。
+
+        这是引擎级硬保证，不依赖裁判每回合记得重判。
+        """
+        ticks: list[dict] = []
+        deaths: list[str] = []
+        for p in alive:
+            for attr in list(p.attributes.values()):
+                if attr.per_turn == 0:
+                    continue
+                before = p.hp
+                p.hp = max(0, min(p.hp_max, before + attr.per_turn))
+                actual = p.hp - before
+                if actual == 0:
+                    continue
+                dead = False
+                if p.hp == 0 and attr.per_turn < 0:
+                    p.alive = False
+                    dead = True
+                    deaths.append(p.player_id)
+                ticks.append(
+                    {
+                        "player_id": p.player_id,
+                        "attr_id": attr.attr_id,
+                        "name": attr.name,
+                        "delta": actual,
+                        "hp": p.hp,
+                        "dead": dead,
+                    }
+                )
+        if not ticks:
+            return alive
+        self._record(
+            LedgerType.SYSTEM,
+            "，".join(
+                f"{self.players[t['player_id']].name} 的「{t['name']}」"
+                f"{'发作' if t['delta'] < 0 else '生效'}"
+                f"{t['delta']:+d} → {t['hp']}/{self.players[t['player_id']].hp_max}"
+                + ("，当场出局" if t["dead"] else "")
+                for t in ticks
+            )
+            + "。",
+            payload={"kind": "attribute_tick", "changes": ticks},
+        )
+        for t in ticks:
+            await self._broadcast(
+                {
+                    "type": "hp_update",
+                    "player_id": t["player_id"],
+                    "hp": t["hp"],
+                    "hp_max": self.players[t["player_id"]].hp_max,
+                    "delta": t["delta"],
+                }
+            )
+        for pid in deaths:
+            victim = self.players[pid]
+            self._record(
+                LedgerType.DEATH,
+                f"{victim.name} 出局。",
+                actor=pid,
+                payload={"player_id": pid, "killer": pid, "cause": "attr_tick"},
+            )
+            await self._broadcast(
+                {
+                    "type": "player_dead",
+                    "player_id": pid,
+                    "name": victim.name,
+                    "cause": "attr_tick",
+                    "killer": pid,
+                }
+            )
+        await self.broadcast_state()
+        return [p for p in alive if p.alive]
+
     async def _play_turn(self, alive: list[Player]) -> None:
         self.turn_no += 1
         for p in alive:
@@ -329,13 +479,23 @@ class Room:
                 p.hp = min(p.hp_max, p.hp + self.pack.hp.regen)
             p.hp_peak = max(p.hp_peak, p.hp)
 
+        alive = await self._run_per_turn(alive)
+        if not alive:
+            await self._finish([])
+            return
+
         actor = self._next_actor(alive)
         self.current_actor = actor.player_id
         self.phase = Phase.DECLARE
         self._collector.reset()
+        regen_note = (
+            f"，所有存活玩家至多回复 {self.pack.hp.regen} 点血量"
+            if self.turn_no > 1 and self.pack.hp.regen > 0
+            else ""
+        )
         self._record(
             LedgerType.SYSTEM,
-            f"第 {self.turn_no} 回合，轮到 {actor.name}。",
+            f"第 {self.turn_no} 回合，轮到 {actor.name}{regen_note}。",
             payload={
                 "kind": "turn_begin",
                 "turn_no": self.turn_no,
@@ -343,6 +503,64 @@ class Room:
                 "hp": {p.player_id: p.hp for p in self.players.values() if p.alive},
             },
         )
+        await self._expire_attributes(alive)
+
+        # 冻结类能力：引擎硬保证，被冻住直接跳过这一回合（无法宣言）。
+        # 按目标自己被跳过的回合数计费，扣完次数才解冻。
+        frozen = next((a for a in actor.attributes.values() if a.freeze), None)
+        if frozen is not None:
+            frozen.charges = max(0, frozen.charges - 1)
+            expired = frozen.charges == 0
+            left = frozen.charges
+            debug_log.log("frozen_skip", turn=self.turn_no, player=actor.name,
+                          attr=frozen.name, charges_left=left,
+                          expired=expired)  # [TEMP-LOG]
+            self._record(
+                LedgerType.SYSTEM,
+                f"{actor.name} 被「{frozen.name}」困住，这一回合完全无法行动。"
+                + ("" if expired else f"（还剩 {left} 回合）"),
+                payload={
+                    "kind": "frozen_skip",
+                    "player_id": actor.player_id,
+                    "attr_id": frozen.attr_id,
+                    "charges_left": left,
+                    "expired": expired,
+                },
+            )
+            await self._broadcast(
+                {
+                    "type": "frozen_skip",
+                    "turn_no": self.turn_no,
+                    "player_id": actor.player_id,
+                    "name": actor.name,
+                    "attr": frozen.name,
+                    "charges_left": left,
+                }
+            )
+            if expired:
+                actor.attributes.pop(frozen.attr_id, None)
+                self._record(
+                    LedgerType.SYSTEM,
+                    f"{actor.name} 的「{frozen.name}」消散了，寒气散尽。",
+                    payload={
+                        "kind": "attribute_expired",
+                        "player_id": actor.player_id,
+                        "attr_id": frozen.attr_id,
+                    },
+                )
+                await self._broadcast(
+                    {
+                        "type": "attribute_removed",
+                        "player_id": actor.player_id,
+                        "player_name": actor.name,
+                        "attr_id": frozen.attr_id,
+                        "name": frozen.name,
+                        "reason": "expired",
+                    }
+                )
+            await self.broadcast_state()
+            return
+
         deadline = self._deadline(self.pack.timers.declare_s)
         await self._broadcast(
             {
@@ -397,19 +615,53 @@ class Room:
             {"type": "phase_change", "phase": Phase.ADJUDICATE.value, "deadline": deadline}
         )
 
-        verdict = judge.adjudicate(self.players, self.turn_no, self.pack, decl)
+        result = await judge_ai.adjudicate(
+            players=self.players,
+            turn_no=self.turn_no,
+            pack=self.pack,
+            decl=decl,
+            ledger=self.ledger,
+            world_summary=self.world_summary,
+            base_url=self.judge_base_url,
+            model=self.judge_model,
+            budget=max(5.0, float(self.pack.timers.judge_s) - 10.0),
+        )
+        verdict = result.verdict
+        if result.clamped:
+            verdict.narrative = f"{verdict.narrative}（数值经服务端钳制）"
+
+        if result.source != "ai":
+            entry = self._record(
+                LedgerType.SYSTEM,
+                f"裁判降级：{result.reason}",
+                payload={"kind": "judge_fallback", "reason": result.reason},
+            )
+            await self._broadcast(
+                {
+                    "type": "judge_fallback",
+                    "reason": result.reason,
+                    "ledger_seq": entry.seq,
+                    "turn_no": self.turn_no,
+                }
+            )
 
         # 属性先落地（新建 / 变化），只给本人回执
         attr_updates: list[dict] = []
         for change in verdict.attr_changes:
             owner = self.players.get(change.get("owner"))
             if owner is None:
+                debug_log.log("attr_apply_miss", turn=self.turn_no,
+                              reason="owner-not-found", change=change)  # [TEMP-LOG]
                 continue
             if change.get("remove"):
                 attr_id = str(change.get("attr_id"))
                 attr = owner.attributes.pop(attr_id, None)
                 if attr is None:
+                    debug_log.log("attr_apply_miss", turn=self.turn_no,
+                                  reason="remove-pop-miss", owner=owner.name, change=change)  # [TEMP-LOG]
                     continue
+                debug_log.log("attr_apply", turn=self.turn_no, action="removed",
+                              owner=owner.name, attr=attr.name)  # [TEMP-LOG]
                 attr_updates.append(
                     {
                         "owner": owner.player_id,
@@ -425,8 +677,12 @@ class Room:
                 continue
             if change.get("created"):
                 if len(owner.attributes) >= self.pack.attributes.max_count:
+                    debug_log.log("attr_apply_miss", turn=self.turn_no,
+                                  reason="max-count", owner=owner.name, change=change)  # [TEMP-LOG]
                     continue
                 if any(a.name == change.get("name") for a in owner.attributes.values()):
+                    debug_log.log("attr_apply_miss", turn=self.turn_no,
+                                  reason="dup-name", owner=owner.name, change=change)  # [TEMP-LOG]
                     continue
                 attr = attr_mod.create_attribute(
                     owner_id=owner.player_id,
@@ -437,8 +693,16 @@ class Room:
                     narrative=str(change.get("narrative", "")),
                     turn_no=self.turn_no,
                     max_cap=self.pack.attributes.max_cap,
+                    duration=int(change.get("duration", 0)),
+                    shield=bool(change.get("shield", False)),
+                    freeze=bool(change.get("freeze", False)),
+                    per_turn=int(change.get("per_turn", 0)),
                 )
                 owner.attributes[attr.attr_id] = attr
+                debug_log.log("attr_apply", turn=self.turn_no, action="created",
+                              owner=owner.name, attr=attr.name, shield=attr.shield,
+                              freeze=attr.freeze, per_turn=attr.per_turn,
+                              expires_turn=attr.expires_turn)  # [TEMP-LOG]
                 self._record(
                     LedgerType.ATTRIBUTE_OPEN,
                     f"{owner.name} 有了「{attr.name}」。",
@@ -453,6 +717,9 @@ class Room:
                         "name": attr.name,
                         "narrative": attr.narrative,
                         "attr_type": attr.attr_type,
+                        "value": attr.value,
+                        "cap": attr.cap,
+                        "expires_turn": attr.expires_turn,
                     }
                 )
                 await self._send(
@@ -463,8 +730,12 @@ class Room:
 
             attr = owner.attributes.get(str(change.get("attr_id")))
             if attr is None:
+                debug_log.log("attr_apply_miss", turn=self.turn_no,
+                              reason="value-attr-miss", owner=owner.name, change=change)  # [TEMP-LOG]
                 continue
             attr.value = max(0, min(attr.cap, int(change.get("value", attr.value))))
+            debug_log.log("attr_apply", turn=self.turn_no, action="value-set",
+                          owner=owner.name, attr=attr.name, value=attr.value)  # [TEMP-LOG]
             attr_updates.append(
                 {
                     "owner": owner.player_id,
@@ -478,7 +749,7 @@ class Room:
                 {"type": "attribute_private", "notice": "变化", "attr": attr.private_view()},
             )
 
-        # 伤害 / 治疗
+        # 伤害 / 治疗：防御属性在这里统一结算（抵扣 + 磨损）
         applied: list[dict] = []
         deaths: list[tuple[str, str]] = []
         for effect in verdict.effects:
@@ -487,15 +758,90 @@ class Room:
             if target is None or not target.alive:
                 continue
             delta = int(effect.get("hp_delta", 0))
+            absorbed = 0
+            if delta < 0 and not effect.get("pierce"):
+                # pierce：宣言明确声明无视免伤特效，本次穿透（属性保留）
+                shield_attr = next(
+                    (a for a in target.attributes.values() if a.shield), None
+                )
+                if shield_attr is not None:
+                    # 能力优先级最高：免伤类属性存在期间，宣言没先破坏它，
+                    # 伤害一律无效（引擎硬保证，不依赖裁判自觉）
+                    applied.append(
+                        {
+                            "player_id": pid,
+                            "hp_delta": 0,
+                            "hp": target.hp,
+                            "absorbed": 0,
+                            "shield": shield_attr.name,
+                        }
+                    )
+                    continue
+                defense, used = effective_defense(target.attributes.values())
+                if defense > 0 and used:
+                    resolved = resolve_damage(-delta, defense)
+                    absorbed = -delta - resolved
+                    delta = -resolved
+                    if absorbed > 0:
+                        for wear in apply_armor_wear(used, absorbed):
+                            attr_updates.append(
+                                {
+                                    "owner": target.player_id,
+                                    "attr_id": wear["attr_id"],
+                                    "name": wear["name"],
+                                    "value": wear["value"],
+                                }
+                            )
+                            attr = target.attributes.get(wear["attr_id"])
+                            if attr is not None:
+                                await self._send(
+                                    target.player_id,
+                                    {
+                                        "type": "attribute_private",
+                                        "notice": "变化",
+                                        "attr": attr.private_view(),
+                                    },
+                                )
             before = target.hp
             target.hp = max(0, min(target.hp_max, before + delta))
             actual = target.hp - before
             if actual == 0:
                 continue
-            applied.append({"player_id": pid, "hp_delta": actual, "hp": target.hp})
+            applied.append(
+                {
+                    "player_id": pid,
+                    "hp_delta": actual,
+                    "hp": target.hp,
+                    "absorbed": absorbed,
+                }
+            )
             if target.hp == 0 and actual < 0:
                 target.alive = False
                 deaths.append((pid, actor.player_id))
+
+        # 用服务端实际结算数值补一条括号，避免模型叙事里的数字与实际血量对不上
+        settle_bits = []
+        for item in applied:
+            target = self.players[item["player_id"]]
+            if item.get("shield"):
+                settle_bits.append(
+                    f"{target.name} 的「{item['shield']}」生效，伤害被完全挡下"
+                )
+            elif item.get("absorbed"):
+                settle_bits.append(
+                    f"{target.name} 护甲挡下 {item['absorbed']}，实际 "
+                    f"{item['hp_delta']:+d} → {item['hp']}/{target.hp_max}"
+                )
+            else:
+                settle_bits.append(
+                    f"{target.name} {item['hp_delta']:+d} → {item['hp']}/{target.hp_max}"
+                )
+        settle_bits.extend(f"{self.players[pid].name} 出局" for pid, _ in deaths)
+        debug_log.log("settle", turn=self.turn_no, actor=actor.name,
+                      applied=applied, deaths=[self.players[pid].name for pid, _ in deaths],
+                      decl=decl.content[:120])  # [TEMP-LOG]
+        if settle_bits:
+            verdict.narrative = f"{verdict.narrative}（结算：{'；'.join(settle_bits)}）"
 
         self.phase = Phase.SETTLE
         self.deadline = None
@@ -510,6 +856,9 @@ class Room:
             payload={
                 "effects": applied,
                 "attr_changes": attr_updates,
+                "source": result.source,
+                "clamped": result.clamped,
+                "attempts": result.attempts,
             },
         )
 
@@ -518,6 +867,8 @@ class Room:
                 "type": "adjudication",
                 "ledger_seq": entry.seq,
                 "narrative": verdict.narrative,
+                "source": result.source,
+                "clamped": result.clamped,
                 "effects": [
                     {
                         "player_id": item["player_id"],
@@ -525,11 +876,14 @@ class Room:
                         "hp": item["hp"],
                     }
                     for item in applied
+                    if item["hp_delta"] != 0
                 ],
             }
         )
 
         for item in applied:
+            if item["hp_delta"] == 0:
+                continue
             await self._broadcast(
                 {
                     "type": "hp_update",
@@ -559,6 +913,35 @@ class Room:
             )
 
         await self.broadcast_state()
+        self._schedule_summary()
+
+    def _schedule_summary(self) -> None:
+        if self.turn_no < 10 or self.turn_no % 10 != 0:
+            return
+        if self.summary_turn >= self.turn_no:
+            return
+        self.summary_turn = self.turn_no
+        self._summary_task = asyncio.create_task(self._refresh_summary())
+
+    async def _refresh_summary(self) -> None:
+        text = await summary.compress(
+            previous=self.world_summary,
+            players=self.players,
+            entries=self.ledger[-60:],
+            base_url=self.judge_base_url,
+            model=self.judge_model,
+        )
+        if not text or self._closed:
+            return
+        self.world_summary = text
+        self._record(
+            LedgerType.SYSTEM,
+            "世界史更新。",
+            payload={"kind": "world_summary", "text": text, "turn_no": self.turn_no},
+        )
+        await self._broadcast(
+            {"type": "world_summary", "text": text, "turn_no": self.turn_no}
+        )
 
     async def _finish(self, alive: list[Player]) -> None:
         self.over = True
@@ -566,44 +949,22 @@ class Room:
         self.deadline = None
         winner = alive[0] if len(alive) == 1 else None
         self.winner = winner.player_id if winner else None
-        ranking = sorted(
-            self.players.values(),
-            key=lambda p: (p.alive, p.hp, p.survived_turns),
-            reverse=True,
-        )
+        result = self.result_view() or {"winner_name": None, "ranking": []}
         self._record(
             LedgerType.SYSTEM,
-            f"{winner.name} 撑到了最后。" if winner else "全倒了，没人站着。",
+            f"{winner.name} 撑到了最后。" if winner else "平局，所有玩家全部死亡。",
             payload={
                 "kind": "game_over",
                 "winner": self.winner,
-                "ranking": [
-                    {
-                        "player_id": p.player_id,
-                        "name": p.name,
-                        "alive": p.alive,
-                        "hp": p.hp,
-                        "survived_turns": p.survived_turns,
-                    }
-                    for p in ranking
-                ],
+                "ranking": result["ranking"],
             },
         )
         await self._broadcast(
             {
                 "type": "game_over",
                 "winner": self.winner,
-                "winner_name": winner.name if winner else None,
-                "ranking": [
-                    {
-                        "player_id": p.player_id,
-                        "name": p.name,
-                        "alive": p.alive,
-                        "hp": p.hp,
-                        "survived_turns": p.survived_turns,
-                    }
-                    for p in ranking
-                ],
+                "winner_name": result["winner_name"],
+                "ranking": result["ranking"],
             }
         )
 
@@ -621,7 +982,7 @@ class Room:
         )
         if self.phase != Phase.DECLARE or self.current_actor != bot.player_id:
             return
-        decl = brain.declare(bot, self.players, self.turn_no)
+        decl = brain.declare(bot, self.players, self.turn_no, self.pack)
         await self._collector.submit(bot.player_id, decl)
 
     # ------------------------------------------------------------------ 玩家动作
@@ -667,6 +1028,9 @@ class Room:
                 "name": attr.name,
                 "narrative": attr.narrative,
                 "attr_type": attr.attr_type,
+                "value": attr.value,
+                "cap": attr.cap,
+                "expires_turn": attr.expires_turn,
             }
         )
         await self._send(

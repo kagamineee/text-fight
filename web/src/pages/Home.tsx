@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import AgentStatus from '../components/AgentStatus'
 import { ensure, send } from '../socket'
 import { toast } from '../store'
 
@@ -92,6 +93,10 @@ export default function Home() {
         <button className="btn btn-primary btn-block" onClick={submit}>
           {mode === 'create' ? '创建房间' : '进房间'}
         </button>
+      </div>
+
+      <div className="home-agent">
+        <AgentStatus />
       </div>
     </div>
   )

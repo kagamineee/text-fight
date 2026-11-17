@@ -44,6 +44,7 @@ class LeaveIn(_In):
 
 class AddBotIn(_In):
     type: Literal["add_bot"]
+    difficulty: Literal["easy", "normal", "hard", "inferno"] = "normal"
 
 
 class RemoveBotIn(_In):

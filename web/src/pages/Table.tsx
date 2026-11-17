@@ -1,25 +1,24 @@
-import { useEffect, useState } from 'react'
-import AttributePanel from '../components/AttributePanel'
+import { useEffect, useRef, useState } from 'react'
+import AgentStatus from '../components/AgentStatus'
 import ChatPanel from '../components/ChatPanel'
 import Countdown from '../components/Countdown'
 import LedgerPanel from '../components/LedgerPanel'
 import PlayerCard from '../components/PlayerCard'
-import { send } from '../socket'
+import {
+  isAgentReady,
+  streamDraft,
+  useAgentHealth,
+  useAgentSettings,
+} from '../agent'
+import { leaveRoom, send } from '../socket'
 import { toast, useGame } from '../store'
 
 const PHASE_LABEL: Record<string, string> = {
   lobby: '房间',
   declare: '发送',
-  respond: '回应',
   adjudicate: '裁判',
   settle: '结算',
   over: '结束',
-}
-
-const PHASE_HINT: Record<string, string> = {
-  declare: '开始头脑风暴，限时一分钟',
-  adjudicate: '裁判在算',
-  settle: '这一回合过去了',
 }
 
 export default function Table() {
@@ -32,20 +31,90 @@ export default function Table() {
 
   const [content, setContent] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [drafting, setDrafting] = useState(false)
+  const [pendingDraft, setPendingDraft] = useState('')
+  const agentSettings = useAgentSettings()
+  const agentHealth = useAgentHealth()
+  const pendingRef = useRef('')
+  const draftAbort = useRef<AbortController | null>(null)
+  const autoDraftTurn = useRef(0)
+  const canDeclareRef = useRef(false)
 
   const phase = room.phase
   const canDeclare = phase === 'declare' && isMyTurn && !!me?.alive
+  canDeclareRef.current = canDeclare
 
   useEffect(() => {
     setSubmitted(false)
-    if (phase === 'declare') setContent('')
-  }, [room.turn_no, phase])
+  }, [room.turn_no])
+
+  useEffect(() => {
+    if (!canDeclare) return
+    if (pendingRef.current) {
+      setContent(pendingRef.current)
+      pendingRef.current = ''
+      setPendingDraft('')
+      autoDraftTurn.current = room.turn_no
+      return
+    }
+    setContent('')
+    if (
+      agentSettings.autoDraft &&
+      isAgentReady(agentHealth) &&
+      autoDraftTurn.current !== room.turn_no
+    ) {
+      autoDraftTurn.current = room.turn_no
+      void runDraft(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canDeclare, room.turn_no])
+
+  useEffect(() => {
+    if (!canDeclare) draftAbort.current?.abort()
+  }, [canDeclare])
+
+  const runDraft = async (preparing: boolean) => {
+    if (drafting) return
+    if (!isAgentReady(agentHealth)) {
+      toast('AI 还没就绪：重新运行 run.bat 启动代理，再点右上角填模型。', 'warn')
+      return
+    }
+    draftAbort.current?.abort()
+    const ctrl = new AbortController()
+    draftAbort.current = ctrl
+    setDrafting(true)
+    let text = ''
+    try {
+      await streamDraft({
+        preparing,
+        signal: ctrl.signal,
+        onText: (next) => {
+          text = next
+          if (preparing && !canDeclareRef.current) {
+            pendingRef.current = next
+            setPendingDraft(next)
+          } else {
+            setContent(next)
+          }
+        },
+      })
+      if (preparing && text.trim() && !canDeclareRef.current) {
+        toast('下一手草稿已备好', 'good')
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return
+      toast(`起草失败：${(err as Error).message}`, 'warn')
+    } finally {
+      setDrafting(false)
+    }
+  }
 
   const submitDeclare = () => {
     if (!content.trim()) {
       toast('写点什么', 'warn')
       return
     }
+    draftAbort.current?.abort()
     send({ type: 'declare', content: content.trim() })
     setSubmitted(true)
   }
@@ -69,7 +138,8 @@ export default function Table() {
           <Countdown deadline={room.deadline} />
         </div>
         <div className="head-spacer" />
-        <button className="btn btn-tiny" onClick={() => send({ type: 'leave_room' })}>
+        <AgentStatus />
+        <button className="btn btn-tiny" onClick={leaveRoom}>
           离开
         </button>
       </header>
@@ -79,60 +149,17 @@ export default function Table() {
           {room.players.map((p) => (
             <PlayerCard key={p.player_id} player={p} isActor={p.player_id === room.current_actor} />
           ))}
-          <AttributePanel />
         </aside>
 
         <main className="col-center">
-          <div className="phase-banner">
-            <span className="phase-name">{PHASE_LABEL[phase] ?? phase}</span>
-            <span className="phase-hint">{PHASE_HINT[phase] ?? ''}</span>
-          </div>
-
-          {game.declaration ? (
-            <div className="declaration-card">
-              <div className="decl-head">
-                <span className="decl-actor">{game.declaration.actor_name}</span>
-              </div>
-              <p className="decl-text">{game.declaration.content}</p>
-            </div>
-          ) : (
-            <div className="declaration-card empty">
-              {phase === 'declare' && actor ? `${actor.name} 正在构思…` : '这一回合还没人说话。'}
-            </div>
-          )}
-
-          {game.adjudication && (
-            <div className="verdict-card">
-              <div className="verdict-head">
-                <span>裁判</span>
-              </div>
-              <p className="verdict-narrative">{game.adjudication.narrative}</p>
-              {game.adjudication.effects.length > 0 && (
-                <div className="verdict-effects">
-                  {game.adjudication.effects.map((e) => {
-                    const target = room.players.find((p) => p.player_id === e.player_id)
-                    return (
-                      <div key={e.player_id} className="effect-row">
-                        <span className="effect-name">{target?.name ?? '未知'}</span>
-                        <span className={`effect-delta ${e.delta < 0 ? 'down' : 'up'}`}>
-                          {e.delta > 0 ? '+' : ''}
-                          {e.delta}
-                        </span>
-                        <span className="effect-hp mono">HP {e.hp}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          )}
+          <LedgerPanel />
 
           <div className="action-area">
             {room.over ? (
               <div className="over-box">
-                <h2>{game.result?.winner_name ?? '全倒了'}</h2>
+                <h2>{game.result?.winner_name ?? '平局'}</h2>
                 <p className="hint">
-                  {game.result?.winner_name ? '最后还站着的人。' : '没人站着。'}
+                  {game.result?.winner_name ? '最终赢家！' : '所有玩家全部死亡'}
                 </p>
                 <div className="ranking">
                   {(game.result?.ranking ?? []).map((r, i) => (
@@ -162,6 +189,15 @@ export default function Table() {
               </div>
             ) : canDeclare ? (
               <div className="declare-box">
+                <div className="draft-bar">
+                  <button
+                    className="btn btn-tiny"
+                    onClick={() => void runDraft(false)}
+                    disabled={drafting}
+                  >
+                    {drafting ? '起草中…' : content ? '重新起草' : '让 AI 起草'}
+                  </button>
+                </div>
                 <textarea
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
@@ -184,13 +220,24 @@ export default function Table() {
               <div className="waiting">
                 <span className="pulse-dot" />
                 {actor ? `等 ${actor.name}…` : '等下一回合…'}
+                {phase === 'declare' && me?.alive && (
+                  <button
+                    className="btn btn-tiny waiting-draft"
+                    onClick={() => void runDraft(true)}
+                    disabled={drafting}
+                  >
+                    {drafting ? '起草中…' : pendingDraft ? '重新起草下一手' : '提前起草'}
+                  </button>
+                )}
+                {pendingDraft && (
+                  <span className="draft-ready">下一手草稿已备好</span>
+                )}
               </div>
             )}
           </div>
         </main>
 
         <aside className="col-right">
-          <LedgerPanel />
           <ChatPanel />
         </aside>
       </div>

@@ -1,5 +1,23 @@
-import { send } from '../socket'
+import { useState } from 'react'
+import AgentStatus from '../components/AgentStatus'
+import { isAgentReady, useAgentHealth } from '../agent'
+import { leaveRoom, send } from '../socket'
 import { toast, useGame } from '../store'
+import type { BotDifficulty } from '../types'
+
+const DIFFICULTIES: { key: BotDifficulty; label: string; hint: string }[] = [
+  { key: 'easy', label: '简单', hint: '会乱打，也会犹豫' },
+  { key: 'normal', label: '普通', hint: '挑残血，受伤会自愈' },
+  { key: 'hard', label: '困难', hint: '高伤，会武装、强化属性' },
+  { key: 'inferno', label: '炼狱', hint: '追斩杀、拆属性，最冷静' },
+]
+
+const DIFF_LABEL: Record<BotDifficulty, string> = {
+  easy: '简单',
+  normal: '普通',
+  hard: '困难',
+  inferno: '炼狱',
+}
 
 export default function Lobby() {
   const game = useGame()
@@ -7,6 +25,8 @@ export default function Lobby() {
   const me = game.session?.player_id
   const isHost = me === room.host_id
   const mePlayer = room.players.find((p) => p.player_id === me)
+  const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>('normal')
+  const agentHealth = useAgentHealth()
   const allReady =
     room.players.length >= 2 &&
     room.players.every((p) => p.kind === 'bot' || p.ready)
@@ -30,7 +50,15 @@ export default function Lobby() {
         <button className="btn btn-ghost" onClick={copyInvite}>
           复制邀请
         </button>
+        <AgentStatus />
       </div>
+
+      {isHost && agentHealth && !isAgentReady(agentHealth) && (
+        <p className="hint host-agent-warn">
+          房主的裁判 AI 还没就绪：对局仍可开始，但会一直用模板裁决。重新运行
+          <code> run.bat</code>，再点右上角填好模型服务。
+        </p>
+      )}
 
       <div className="lobby-grid">
         <div className="panel">
@@ -45,7 +73,11 @@ export default function Lobby() {
                 <span className="lobby-name">
                   {p.name}
                   {p.player_id === room.host_id && <span className="badge badge-host">房主</span>}
-                  {p.kind === 'bot' && <span className="badge badge-bot">AI</span>}
+                  {p.kind === 'bot' && (
+                    <span className={`badge badge-bot diff-${p.bot_difficulty ?? 'normal'}`}>
+                      AI·{DIFF_LABEL[p.bot_difficulty ?? 'normal']}
+                    </span>
+                  )}
                   {p.player_id === me && <span className="badge badge-me">你</span>}
                 </span>
                 <span className={`ready-state ${p.kind === 'bot' || p.ready ? 'on' : ''}`}>
@@ -80,8 +112,30 @@ export default function Lobby() {
           )}
 
           {isHost && (
+            <div className="bot-picker">
+              <span className="bot-picker-label">假人难度</span>
+              <div className="difficulty-picker">
+                {DIFFICULTIES.map((d) => (
+                  <button
+                    key={d.key}
+                    type="button"
+                    title={d.hint}
+                    className={`chip-btn ${botDifficulty === d.key ? 'active' : ''}`}
+                    onClick={() => setBotDifficulty(d.key)}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isHost && (
             <div className="lobby-actions">
-              <button className="btn btn-ghost" onClick={() => send({ type: 'add_bot' })}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => send({ type: 'add_bot', difficulty: botDifficulty })}
+              >
                 + 添加假人
               </button>
               <button
@@ -136,7 +190,7 @@ export default function Lobby() {
         </div>
       </div>
 
-      <button className="btn btn-ghost lobby-leave" onClick={() => send({ type: 'leave_room' })}>
+      <button className="btn btn-ghost lobby-leave" onClick={leaveRoom}>
         离开房间
       </button>
     </div>
