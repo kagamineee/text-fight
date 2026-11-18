@@ -4,9 +4,7 @@ import type {
   ChatMsg,
   Declaration,
   LedgerEntry,
-  PrivateAttr,
   RoomState,
-  Toast,
 } from './types'
 
 export interface HpFloat {
@@ -24,6 +22,7 @@ export interface RankRow {
 }
 
 export interface GameResult {
+  reason?: string
   winner_name: string | null
   ranking: RankRow[]
 }
@@ -33,12 +32,10 @@ export interface GameState {
   connecting: boolean
   session: { token: string; player_id: string; name: string } | null
   room: RoomState | null
-  myAttrs: PrivateAttr[]
   ledger: LedgerEntry[]
   declaration: Declaration | null
   adjudication: Adjudication | null
   chats: ChatMsg[]
-  toasts: Toast[]
   floats: HpFloat[]
   error: string | null
   offset: number
@@ -50,12 +47,10 @@ const initial: GameState = {
   connecting: false,
   session: null,
   room: null,
-  myAttrs: [],
   ledger: [],
   declaration: null,
   adjudication: null,
   chats: [],
-  toasts: [],
   floats: [],
   error: null,
   offset: 0,
@@ -86,15 +81,6 @@ export function useGame(): GameState {
   return useSyncExternalStore(subscribe, getState)
 }
 
-let toastSeq = 1
-export function toast(text: string, kind: Toast['kind'] = 'info') {
-  const id = toastSeq++
-  setState((s) => ({ toasts: [...s.toasts, { id, text, kind }] }))
-  window.setTimeout(() => {
-    setState((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
-  }, 3400)
-}
-
 let floatSeq = 1
 export function addFloat(player_id: string, delta: number) {
   const id = floatSeq++
@@ -107,7 +93,6 @@ export function addFloat(player_id: string, delta: number) {
 export function resetRoom() {
   setState({
     room: null,
-    myAttrs: [],
     ledger: [],
     declaration: null,
     adjudication: null,

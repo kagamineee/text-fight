@@ -120,7 +120,6 @@ function AgentDialog({ onClose }: { onClose: () => void }) {
   const [model, setModel] = useState(health?.model || PROVIDERS[0].model)
   const [apiKey, setApiKey] = useState('')
   const [passcode, setPasscode] = useState(settings.passcode)
-  const [autoDraft, setAutoDraft] = useState(settings.autoDraft)
   const [busy, setBusy] = useState<'' | 'save' | 'test'>('')
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -137,7 +136,7 @@ function AgentDialog({ onClose }: { onClose: () => void }) {
   /** 先把界面上的地址/口令记住，再把模型配置交给代理保存。 */
   const persist = async () => {
     if (!baseUrl.trim()) throw new Error('先选服务商，或填写上游地址。')
-    saveAgentSettings({ baseUrl: proxyUrl.trim() || settings.baseUrl, passcode, autoDraft })
+    saveAgentSettings({ baseUrl: proxyUrl.trim() || settings.baseUrl, passcode })
     await saveAgentConfig({ baseUrl, model, apiKey })
   }
 
@@ -192,7 +191,7 @@ function AgentDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <p className="hint">
-          填一次就行，会保存在本机。你的 AI 草稿和房主的裁判都用这个模型；不填也能手写。
+          填一次就行，会保存在本机。这个代理只负责房主裁判和困难/炼狱假人；玩家手写宣言，不需要配置自己的 API。
         </p>
 
         <label className="field">
@@ -240,15 +239,6 @@ function AgentDialog({ onClose }: { onClose: () => void }) {
             }
             autoComplete="off"
           />
-        </label>
-
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={autoDraft}
-            onChange={(e) => setAutoDraft(e.target.checked)}
-          />
-          轮到我时自动起草
         </label>
 
         <div className={`agent-health ${message ? (message.ok ? 'ok' : 'bad') : health?.ok && health.configured !== false ? 'ok' : 'bad'}`}>

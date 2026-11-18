@@ -22,7 +22,7 @@ class NullHub:
 
 
 def make_room(n_players: int = 4):
-    pack = next(iter(load_packs().values()))
+    pack = load_packs()["default-arena"]
     hub = NullHub()
     room = Room(
         room_id="r1",
@@ -39,7 +39,7 @@ def make_room(n_players: int = 4):
 
 class DisasterCurveTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.pack = next(iter(load_packs().values()))
+        self.pack = load_packs()["default-arena"]
 
     def test_level_and_damage(self) -> None:
         self.assertEqual(disaster.level_for(self.pack, 14), 0)

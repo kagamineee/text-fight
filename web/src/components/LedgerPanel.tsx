@@ -5,6 +5,7 @@ const FILTERS = [
   { key: 'all', label: '全部' },
   { key: 'declaration', label: '发送' },
   { key: 'adjudication', label: '裁定' },
+  { key: 'event', label: '事件' },
   { key: 'system', label: '系统' },
 ]
 
@@ -24,6 +25,7 @@ const TYPE_LABEL: Record<string, string> = {
   system: '系统',
   attribute_open: '属性',
   disaster: '天灾',
+  event: '事件',
   inheritance: '继承',
 }
 

@@ -1,4 +1,4 @@
-import { useGame } from './store'
+import { setState, useGame } from './store'
 import Home from './pages/Home'
 import Lobby from './pages/Lobby'
 import Table from './pages/Table'
@@ -15,16 +15,12 @@ export default function App() {
       )}
 
       {!game.room && <Home />}
+      {game.error && <p className="hint" role="alert">
+        {game.error} <button className="btn btn-ghost" onClick={() => setState({ error: null })}>关闭</button>
+      </p>}
       {game.room && game.room.phase === 'lobby' && !game.room.over && <Lobby />}
       {game.room && (game.room.phase !== 'lobby' || game.room.over) && <Table />}
 
-      <div className="toasts">
-        {game.toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.kind}`}>
-            {t.text}
-          </div>
-        ))}
-      </div>
     </div>
   )
 }

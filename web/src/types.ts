@@ -24,7 +24,6 @@ export interface PublicAttr {
 export interface PrivateAttr extends PublicAttr {
   initial: number
   exchange_rate: number
-  consume_rule: string
   opened_turn: number
 }
 
@@ -39,7 +38,6 @@ export interface PlayerView {
   alive: boolean
   connected: boolean
   ready: boolean
-  appeals_left: number
   attributes: PublicAttr[]
 }
 
@@ -51,6 +49,7 @@ export interface PackView {
   intensity: { cap_base: number; cap_growth: number; level_words: Record<string, number> }
   attributes: { max_count: number; max_initial: number; max_cap: number; max_exchange_rate: number }
   timers: { declare_s: number; judge_s: number }
+  events?: Array<{ id: string; name: string; target: string }>
 }
 
 export interface RoomState {
@@ -65,6 +64,7 @@ export interface RoomState {
   deadline: number | null
   over: boolean
   result?: {
+    reason?: string
     winner_name: string | null
     ranking: Array<{
       player_id: string
@@ -75,6 +75,14 @@ export interface RoomState {
     }>
   } | null
   world_summary?: string
+  active_effects?: Array<{
+    effect_id: string
+    name: string
+    targets: string[]
+    description: string
+    remaining: number | null
+    remaining_text: string
+  }>
   disaster?: { level: number; damage: number }
 }
 
@@ -98,7 +106,7 @@ export interface Adjudication {
   ledger_seq: number
   narrative: string
   effects: { player_id: string; delta: number; hp: number }[]
-  source?: 'ai' | 'stub'
+  source?: 'ai' | 'stub' | 'rejected'
   clamped?: boolean
 }
 
@@ -108,10 +116,4 @@ export interface ChatMsg {
   text: string
   channel: string
   own: boolean
-}
-
-export interface Toast {
-  id: number
-  text: string
-  kind: 'info' | 'warn' | 'good'
 }

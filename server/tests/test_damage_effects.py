@@ -23,7 +23,7 @@ class NullHub:
 
 
 def make_room(n_players: int = 2):
-    pack = next(iter(load_packs().values()))
+    pack = load_packs()["default-arena"]
     room = Room(room_id="r1", code="AAAAAA", password_hash="", pack=pack, host_id="", hub=NullHub())
     names = ["甲", "乙", "丙"]
     players = [room.add_player(names[i], kind="human", pid=f"p{i}") for i in range(n_players)]
@@ -74,7 +74,7 @@ class DamageReductionTest(unittest.TestCase):
         self.assertEqual(players[1].hp, players[1].hp_max - 10)
 
     def test_reduction_clamped_to_ninety(self) -> None:
-        pack = next(iter(load_packs().values()))
+        pack = load_packs()["default-arena"]
         _room, players = make_room(2)
         change = judge_ai.AttrChangeOut(
             owner=players[0].player_id,
@@ -179,7 +179,7 @@ class LethalOnlyShieldTest(unittest.TestCase):
 
 class NormalizeLethalOnlyTest(unittest.TestCase):
     def test_lethal_only_passed(self) -> None:
-        pack = next(iter(load_packs().values()))
+        pack = load_packs()["default-arena"]
         _room, players = make_room(2)
         change = judge_ai.AttrChangeOut(
             owner=players[0].player_id,
@@ -201,7 +201,7 @@ class NormalizeLethalOnlyTest(unittest.TestCase):
 
 class NormalizeShieldFieldsTest(unittest.TestCase):
     def test_charges_and_heal_force_shield(self) -> None:
-        pack = next(iter(load_packs().values()))
+        pack = load_packs()["default-arena"]
         _room, players = make_room(2)
         change = judge_ai.AttrChangeOut(
             owner=players[0].player_id,

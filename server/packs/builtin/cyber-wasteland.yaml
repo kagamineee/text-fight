@@ -1,0 +1,94 @@
+id: cyber-wasteland
+name: 霓虹废土
+description: 高烈度快节奏包。义体过载、数据污染，伤害与天灾都来得更早，鼓励速战速决。
+
+hp:
+  base: 80
+  regen: 3
+
+intensity:
+  cap_base: 10
+  cap_growth: 3          # cap(t) = 10 + 3*(t-1)，滚雪球更快
+  ceiling_factor: 1.8
+  level_words:
+    轻微: 0.35
+    常规: 0.7
+    过载: 1.2
+    熔毁: 1.9
+
+attributes:
+  max_count: 10
+  max_initial: 12
+  max_cap: 40
+  max_exchange_rate: 2.5
+
+timers:
+  declare_s: 45
+  judge_s: 45
+
+disaster:
+  start_turn: 12
+  every_n_turns: 2
+  base_damage: 3
+  growth: 2
+
+appeal:
+  count: 2
+  window_s: 30
+  vote_s: 60
+
+inheritance:
+  power_ratio: 0.5
+
+events:
+  - id: grid-surge
+    name: 电网过载
+    narrative: 城域电网周期性过载，所有人的义体同时被灼烧，电弧在骨骼间乱窜。
+    trigger:
+      start_turn: 3
+      every: 4
+      max_times: 4
+    target: all
+    hp: -5
+  - id: black-market
+    name: 黑市交易
+    narrative: 一架无标识无人机掠过，把一只黑市义体丢进 {target} 怀里。
+    trigger:
+      turns: [4, 9, 14]
+    target: random
+    hp_pct: 20
+    attribute:
+      name: 黑市义体
+      narrative: 来路不明的军用义体，接上就再也拆不下来。
+      attr_type: defense
+      value: 4
+      cap: 12
+      duration: 3
+      damage_reduction: 15
+  - id: data-corruption
+    name: 数据污染
+    narrative: 一段污染数据爬进 {target} 的神经接口，错误指令开始反复灼烧他的内脏。
+    trigger:
+      start_turn: 6
+      every: 6
+      chance: 0.6
+    target: highest_ratio
+    hp: -10
+    attribute:
+      name: 数据污染
+      narrative: 耳边一直有错位的电流声，闭上眼也停不下来。
+      attr_type: utility
+      value: 2
+      cap: 6
+      duration: 2
+      per_turn: -3
+
+victory: last_alive
+tie_break:
+  - survived_turns
+  - hp_peak
+
+referee_prompt: |
+  世界观：霓虹废土，酸雨、义体与黑市广播。裁判是劫后电台的播报员，语气干燥、带电流杂音感。
+  把能力描述成植入体、病毒、无人机、数据劫持一类的废土造物；伤害要落在具体的义体故障或组织损伤上。
+  只写「谁对谁造成了什么效果」，不解释原理，不替玩家抒情。

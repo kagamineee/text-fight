@@ -1,5 +1,6 @@
 import { useGame } from '../store'
 import type { PlayerView } from '../types'
+import { attributeEffects } from '../attributeEffects'
 
 function typeLabel(t: string) {
   if (t === 'attack') return '攻'
@@ -81,7 +82,7 @@ export default function PlayerCard({
               <span
                 key={a.attr_id}
                 className={`attr-chip chip-${a.attr_type}${a.shield ? ' chip-shield' : ''}`}
-                title={a.narrative}
+                title={attributeEffects(a, game.room?.turn_no ?? 0)}
               >
                 <b>{typeLabel(a.attr_type)}</b>
                 {a.name}
@@ -120,6 +121,13 @@ export default function PlayerCard({
         </div>
       )}
 
+      {game.room?.active_effects?.filter((effect) => effect.targets.includes(player.player_id)).map((effect) => (
+        <div className="attr-chips" key={effect.effect_id}>
+          <span className="attr-chip chip-utility" title={effect.description}>
+            {effect.name} · {effect.remaining_text}
+          </span>
+        </div>
+      ))}
       {!player.alive && <div className="dead-mark">出局</div>}
     </div>
   )

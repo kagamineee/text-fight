@@ -1,17 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import AgentStatus from '../components/AgentStatus'
 import ChatPanel from '../components/ChatPanel'
 import Countdown from '../components/Countdown'
 import LedgerPanel from '../components/LedgerPanel'
 import PlayerCard from '../components/PlayerCard'
-import {
-  isAgentReady,
-  streamDraft,
-  useAgentHealth,
-  useAgentSettings,
-} from '../agent'
 import { leaveRoom, send } from '../socket'
-import { toast, useGame } from '../store'
+import { useGame } from '../store'
 
 const PHASE_LABEL: Record<string, string> = {
   lobby: '房间',
@@ -31,90 +25,23 @@ export default function Table() {
 
   const [content, setContent] = useState('')
   const [submitted, setSubmitted] = useState(false)
-  const [drafting, setDrafting] = useState(false)
-  const [pendingDraft, setPendingDraft] = useState('')
-  const agentSettings = useAgentSettings()
-  const agentHealth = useAgentHealth()
-  const pendingRef = useRef('')
-  const draftAbort = useRef<AbortController | null>(null)
-  const autoDraftTurn = useRef(0)
-  const canDeclareRef = useRef(false)
 
   const phase = room.phase
   const canDeclare = phase === 'declare' && isMyTurn && !!me?.alive
-  canDeclareRef.current = canDeclare
 
   useEffect(() => {
     setSubmitted(false)
   }, [room.turn_no])
 
   useEffect(() => {
-    if (!canDeclare) return
-    if (pendingRef.current) {
-      setContent(pendingRef.current)
-      pendingRef.current = ''
-      setPendingDraft('')
-      autoDraftTurn.current = room.turn_no
-      return
-    }
-    setContent('')
-    if (
-      agentSettings.autoDraft &&
-      isAgentReady(agentHealth) &&
-      autoDraftTurn.current !== room.turn_no
-    ) {
-      autoDraftTurn.current = room.turn_no
-      void runDraft(false)
-    }
+    if (canDeclare) setContent('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canDeclare, room.turn_no])
 
-  useEffect(() => {
-    if (!canDeclare) draftAbort.current?.abort()
-  }, [canDeclare])
-
-  const runDraft = async (preparing: boolean) => {
-    if (drafting) return
-    if (!isAgentReady(agentHealth)) {
-      toast('AI 还没就绪：重新运行 run.bat 启动代理，再点右上角填模型。', 'warn')
-      return
-    }
-    draftAbort.current?.abort()
-    const ctrl = new AbortController()
-    draftAbort.current = ctrl
-    setDrafting(true)
-    let text = ''
-    try {
-      await streamDraft({
-        preparing,
-        signal: ctrl.signal,
-        onText: (next) => {
-          text = next
-          if (preparing && !canDeclareRef.current) {
-            pendingRef.current = next
-            setPendingDraft(next)
-          } else {
-            setContent(next)
-          }
-        },
-      })
-      if (preparing && text.trim() && !canDeclareRef.current) {
-        toast('下一手草稿已备好', 'good')
-      }
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') return
-      toast(`起草失败：${(err as Error).message}`, 'warn')
-    } finally {
-      setDrafting(false)
-    }
-  }
-
   const submitDeclare = () => {
     if (!content.trim()) {
-      toast('写点什么', 'warn')
       return
     }
-    draftAbort.current?.abort()
     send({ type: 'declare', content: content.trim() })
     setSubmitted(true)
   }
@@ -146,7 +73,7 @@ export default function Table() {
           <Countdown deadline={room.deadline} />
         </div>
         <div className="head-spacer" />
-        <AgentStatus />
+        {isHost && <AgentStatus />}
         <button className="btn btn-tiny" onClick={leaveRoom}>
           离开
         </button>
@@ -165,9 +92,9 @@ export default function Table() {
           <div className="action-area">
             {room.over ? (
               <div className="over-box">
-                <h2>{game.result?.winner_name ?? '平局'}</h2>
+                <h2>{game.result?.reason ? '对局已终止' : (game.result?.winner_name ?? '平局')}</h2>
                 <p className="hint">
-                  {game.result?.winner_name ? '最终赢家！' : '所有玩家全部死亡'}
+                  {game.result?.reason || (game.result?.winner_name ? '最终赢家！' : '所有玩家全部死亡')}
                 </p>
                 <div className="ranking">
                   {(game.result?.ranking ?? []).map((r, i) => (
@@ -197,15 +124,6 @@ export default function Table() {
               </div>
             ) : canDeclare ? (
               <div className="declare-box">
-                <div className="draft-bar">
-                  <button
-                    className="btn btn-tiny"
-                    onClick={() => void runDraft(false)}
-                    disabled={drafting}
-                  >
-                    {drafting ? '起草中…' : content ? '重新起草' : '让 AI 起草'}
-                  </button>
-                </div>
                 <textarea
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
@@ -228,18 +146,6 @@ export default function Table() {
               <div className="waiting">
                 <span className="pulse-dot" />
                 {actor ? `等 ${actor.name}…` : '等下一回合…'}
-                {phase === 'declare' && me?.alive && (
-                  <button
-                    className="btn btn-tiny waiting-draft"
-                    onClick={() => void runDraft(true)}
-                    disabled={drafting}
-                  >
-                    {drafting ? '起草中…' : pendingDraft ? '重新起草下一手' : '提前起草'}
-                  </button>
-                )}
-                {pendingDraft && (
-                  <span className="draft-ready">下一手草稿已备好</span>
-                )}
               </div>
             )}
           </div>

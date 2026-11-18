@@ -23,7 +23,7 @@ class NullHub:
 
 
 def make_room(n_players: int = 2):
-    pack = next(iter(load_packs().values()))
+    pack = load_packs()["default-arena"]
     hub = NullHub()
     room = Room(room_id="r1", code="AAAAAA", password_hash="", pack=pack, host_id="", hub=hub)
     names = ["甲", "乙"]
@@ -148,7 +148,7 @@ class IndestructibleInheritanceTest(unittest.TestCase):
 
 class IndestructibleNormalizeTest(unittest.TestCase):
     def test_normalize_passes_flag(self) -> None:
-        pack = next(iter(load_packs().values()))
+        pack = load_packs()["default-arena"]
         _room, players, _hub = make_room(2)
         change = judge_ai.AttrChangeOut(
             owner=players[0].player_id,

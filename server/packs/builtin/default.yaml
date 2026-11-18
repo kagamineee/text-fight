@@ -40,9 +40,72 @@ appeal:
 inheritance:
   power_ratio: 0.4
 
+events:
+  - id: crowd-favor
+    name: 观众喝彩
+    narrative: 看台为 {target} 爆发出震耳欲聋的喝彩，伤口在声浪里稍稍止血。
+    trigger:
+      turns: [3, 8, 13]
+    target: random
+    hp_pct: 15
+    attribute:
+      name: 观众的欢呼
+      narrative: 看台一遍遍喊着这个名字，握兵器的手不再发抖。
+      attr_type: utility
+      value: 3
+      cap: 8
+      duration: 2
+  - id: sandstorm
+    name: 沙暴
+    narrative: 沙暴越过外墙，全场所有人都被砂砾割去一层皮肉。
+    trigger:
+      start_turn: 4
+      every: 5
+      max_times: 3
+    target: all
+    hp: -4
+  - id: gate-closes
+    name: 铁门落下
+    narrative: 铁门在 {target} 身后轰然落下，退路已断，只剩困兽之斗。
+    trigger:
+      turns: [6, 12]
+    target: lowest_hp
+    hp: -8
+    attribute:
+      name: 困兽之斗
+      narrative: 无路可退的人往往最危险。
+      attr_type: attack
+      value: 4
+      cap: 10
+      duration: 2
+
+  - id: whisper
+    name: 低语
+    narrative: 有什么东西在 {target} 耳边说话，他握着兵器的手停了一瞬。
+    trigger:
+      start_turn: 7
+      every: 6
+      chance: 0.6
+    target: lowest_hp
+    mode: judged
+    judge_prompt: |
+      低语勾起目标最不愿回想的记忆：造成 4~8 点精神伤害；
+      若目标此时血量低于一半，再附加一个持续 2 回合的「心神不宁」属性（每回合 -2 HP）。
+    hp: -5
+    attribute:
+      name: 心神不宁
+      narrative: 耳边一直有人在说话，他分不清是真是假。
+      attr_type: utility
+      value: 2
+      cap: 6
+      duration: 2
+      per_turn: -2
+
 victory: last_alive
 tie_break:
   - survived_turns
   - hp_peak
 
-referee_prompt: ""
+referee_prompt: |
+  世界观：无名角斗场，黄沙、铁栅与看台上沉闷的鼓点。裁判像场内播报员，语气冷峻、惜字如金。
+  只写「谁对谁造成了什么效果」，用具体的动作和伤情代替形容词堆砌；不替玩家抒情，不评判招式高低。

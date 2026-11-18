@@ -1,0 +1,90 @@
+id: xiuzhen-brawl
+name: 修真乱斗
+description: 慢热高血量包。境界压制、法宝互克，属性上限更高，靠后期天罚收束战局。
+
+hp:
+  base: 140
+  regen: 8
+
+intensity:
+  cap_base: 6
+  cap_growth: 2          # 起步温和，越打越夸张
+  ceiling_factor: 1.6
+  level_words:
+    微末: 0.25
+    寻常: 0.6
+    凌厉: 1.0
+    天罚: 1.7
+
+attributes:
+  max_count: 10
+  max_initial: 14
+  max_cap: 36
+  max_exchange_rate: 2.0
+
+timers:
+  declare_s: 75
+  judge_s: 60
+
+disaster:
+  start_turn: 18
+  every_n_turns: 4
+  base_damage: 3
+  growth: 2
+
+appeal:
+  count: 2
+  window_s: 30
+  vote_s: 60
+
+inheritance:
+  power_ratio: 0.35
+
+events:
+  - id: spirit-tide
+    name: 灵气潮汐
+    narrative: 天地灵气忽然暴涨，所有人被灌入经脉，伤势在灵潮中缓缓复原。
+    trigger:
+      start_turn: 5
+      every: 5
+    target: all
+    hp_pct: 8
+  - id: heart-demon
+    name: 心魔劫
+    narrative: 心魔在 {target} 识海里翻涌，暗伤顺着经脉持续发作。
+    trigger:
+      turns: [8, 14]
+    target: highest_hp
+    hp: -12
+    attribute:
+      name: 心魔
+      narrative: 越是道心稳固，心魔越懂得从哪里下刀。
+      attr_type: utility
+      value: 3
+      cap: 8
+      duration: 2
+      per_turn: -4
+  - id: broken-treasure
+    name: 天降异宝
+    narrative: 一件残破法宝破空坠落，正好落在 {target} 手中。
+    trigger:
+      turns: [7, 12]
+      chance: 0.7
+    target: random
+    attribute:
+      name: 残破法宝
+      narrative: 灵光黯淡，却仍能斩开护体真气。
+      attr_type: attack
+      value: 6
+      cap: 18
+      duration: 3
+
+victory: last_alive
+tie_break:
+  - survived_turns
+  - hp_peak
+
+referee_prompt: |
+  世界观：修真乱斗，云雾、剑光与破碎的护山大阵。裁判是冷眼旁观的执事，语气克制、古雅。
+  把能力描述成功法、法宝、符箓、神识或因果手段；交手写清楚气机碰撞、护体灵光破碎、经脉受创这类可见的后果。
+  只写「谁对谁造成了什么效果」，不点评境界高低，不替玩家抒情。

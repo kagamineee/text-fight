@@ -91,7 +91,6 @@ class MaterializeTests(unittest.TestCase):
             initial=3,
             cap=6,
             exchange_rate=1.0,
-            consume_rule="",
             value=3,
             opened_turn=1,
         )

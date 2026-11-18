@@ -53,7 +53,7 @@
 |---|---|---|---|
 | P1-T1 | yap-agent 代理 | 单文件代理：config、/health、/v1/chat/completions 透传（SSE 流式）、Origin 白名单、由 run.bat 一并启动、config.example.toml | `agent/yap_agent.py` |
 | P1-T2 | 前端代理接入 | 设置页（base_url/model 显示/测试连接）、牌桌代理状态徽标、离线降级提示 | `web/` 设置与状态组件 |
-| P1-T3 | 玩家 AI 草稿 | 轮到自己时自动（或按钮触发）向本机代理请求宣言草稿，流式渲染、可编辑、提交 | 前端 prompt 组装 + 流式 UI |
+| P1-T3 | ~~玩家 AI 草稿~~（已裁撤） | 曾实现轮到自己时向本机代理请求宣言草稿；P2 后续按要求删除，玩家改为手写宣言 | 已移除 |
 | P1-T4 | 裁判 AI 管线 | 上下文组装器、裁判提示词、结构化输出 schema、校验重试、降级回落 stub | `server/game/judge_ai.py` |
 | P1-T5 | 服务端终审钳制 | 对裁判输出的 intensity/effects 做硬钳制与底线重算，越界截断并记 `clamped` 标记 | `server/game/formulas.py` 扩展 |
 | P1-T6 | 隐形层完整版 | 叙事开户流程（裁判折算→玩家确认→封存）、attribute_changes 私有单播、裁判上下文注入 | `server/game/attributes.py` 改造 |
@@ -189,7 +189,9 @@ attribute delta 后 value ∈ [0, cap]
 
 ---
 
-## 5. 玩家 AI 草稿（前端）
+## 5. 玩家 AI 草稿（前端，已裁撤）
+
+> 该功能已在 P2 后续删除：玩家不再需要也不需要配置 API，所有 AI 统一走房主代理。以下内容仅作历史设计记录。
 
 - 轮到自己时（`turn_begin` 且 current_player == me）：输入区上方显示「让 AI 起草」按钮 + 自动起草开关（设置页）。
 - 请求发往本机 agent；流式渲染进**可编辑文本框**——玩家可以整段采用、改写或全部手写。**提交的永远是玩家确认的文本。**

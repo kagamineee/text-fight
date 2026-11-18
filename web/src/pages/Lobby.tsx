@@ -2,7 +2,7 @@ import { useState } from 'react'
 import AgentStatus from '../components/AgentStatus'
 import { isAgentReady, useAgentHealth } from '../agent'
 import { leaveRoom, send } from '../socket'
-import { toast, useGame } from '../store'
+import { setState, useGame } from '../store'
 import type { BotDifficulty } from '../types'
 
 const DIFFICULTIES: { key: BotDifficulty; label: string; hint: string }[] = [
@@ -36,9 +36,8 @@ export default function Lobby() {
     const link = `${location.origin}/?code=${room.code}`
     try {
       await navigator.clipboard.writeText(link)
-      toast('链接已复制', 'good')
     } catch {
-      toast(`房号：${room.code}`, 'info')
+      setState({ error: `无法访问剪贴板，请手动复制房号：${room.code}` })
     }
   }
 
@@ -50,12 +49,12 @@ export default function Lobby() {
         <button className="btn btn-ghost" onClick={copyInvite}>
           复制邀请
         </button>
-        <AgentStatus />
+        {isHost && <AgentStatus />}
       </div>
 
       {isHost && agentHealth && !isAgentReady(agentHealth) && (
         <p className="hint host-agent-warn">
-          房主的裁判 AI 还没就绪：对局仍可开始，但会一直用模板裁决。重新运行
+          房主的裁判 AI 还没就绪：对局仍可开始，离线仅执行基础攻击和治疗模板，复杂宣言会显示未执行。重新运行
           <code> run.bat</code>，再点右上角填好模型服务。
         </p>
       )}

@@ -3,9 +3,9 @@
 四档难度只改变"怎么打"，不改变规则：假人和真人一样，写一段自由文本
 交给裁判，绝不直接改数值。
 
-- easy    简单：乱挑目标、力道小、经常犹豫，几乎不设防；
+- easy    简单：乱挑目标、力道小，几乎不设防；
 - normal  普通：专挑残血、受伤会包扎、没防具时会立个盾；
-- hard    困难：伤害更高、会武装自己、会强化已有属性、低血优先自救；
+- hard    困难：伤害更高、建立定时护甲、强化通用护甲、低血优先自救；
 - inferno 炼狱：追求斩杀、拆掉对手的属性、能连招，血线管理最冷静。
 """
 
@@ -19,12 +19,6 @@ from .formulas import IntensityRules
 from .models import Declaration, Player
 
 DIFFICULTIES = ("easy", "normal", "hard", "inferno")
-DIFFICULTY_LABELS = {
-    "easy": "简单",
-    "normal": "普通",
-    "hard": "困难",
-    "inferno": "炼狱",
-}
 DEFAULT_DIFFICULTY = "normal"
 
 
@@ -93,42 +87,15 @@ NORMAL_HEAL = "我撕下衣角按住伤口，给自己包扎，恢复 {n} 点血
 HARD_HEAL = "我咬牙给自己止血包扎，恢复 {n} 点血量。"
 INFERNO_HEAL = "我冷冷退开半步，飞快处理伤口，恢复 {n} 点血量。"
 
-GUARD_TEMPLATES = [
-    "我往后退了两步，先把气缓过来。",
-    "我抬起胳膊护住头，没急着还手。",
-    "我把椅子挡在身前，盯着对面。",
-]
-
-HESITATE_TEMPLATES = [
-    "我绕着他转圈，没敢下手。",
-    "我大喊一声给自己壮胆，脚却没动。",
-    "我犹豫了一下，退了半步。",
-]
-
-CREATE_ATTR = "我沉肩蓄力，凝聚「{name}」，强度 {value} 点。"
-UPGRADE_ATTR = "我稳住气息，强化「{attr}」，把它提到 {value} 点。"
-SABOTAGE_ATTR = "我一掌拍在{target}的「{attr}」上，把它打碎封印，造成 {dmg} 点伤害。"
 FREEZE_ATTR = "我猛然挥出寒霜冲击，凝聚「冰封咒」冻住{target}，让他 {turns} 回合动弹不得。"
+CREATE_ARMOR = "我为自己凝聚「{name}」，固定抵扣 {value} 点伤害，持续 {turns} 回合。"
+UPGRADE_ARMOR = "我将自己的护甲「{attr}」（{effect_id}）的固定抵扣提高到 {value} 点，其他规则与剩余时限不变。"
+DISPEL_ATTACK = "我解除{target}身上的「{attr}」（{effect_id}），随后对其造成 {dmg} 点伤害。"
 
 
 def _best_attr(player: Player, attr_type: str):
     attrs = [a for a in player.attributes.values() if a.attr_type == attr_type]
     return max(attrs, key=lambda a: (a.value, a.cap), default=None)
-
-
-def _best_enemy_attr(enemies: list[Player]):
-    """挑对面最值得拆的属性：免伤盾最优先（不拆就打不动），其次数值最大的。"""
-    best = None
-    for enemy in enemies:
-        for attr in enemy.attributes.values():
-            if best is None:
-                best = (enemy, attr)
-                continue
-            if attr.shield and not best[1].shield:
-                best = (enemy, attr)
-            elif attr.shield == best[1].shield and attr.value > best[1].value:
-                best = (enemy, attr)
-    return best if best else (None, None)
 
 
 class BotBrain:
@@ -139,6 +106,7 @@ class BotBrain:
     ):
         self.rng = random.Random(seed)
         self.difficulty = normalize_difficulty(difficulty)
+        self.effects = None
 
     def _alive_enemies(self, me: Player, players: dict[str, Player]) -> list[Player]:
         return [p for p in players.values() if p.alive and p.player_id != me.player_id]
@@ -157,10 +125,19 @@ class BotBrain:
         players: dict[str, Player],
         turn_no: int,
         pack=None,
+        effects=None,
     ) -> Declaration:
+        self.effects = effects
         enemies = self._alive_enemies(me, players)
+        if effects is not None:
+            allowed = effects.allowed_targets(me.player_id)
+            enemies = [p for p in enemies if p.player_id in allowed]
+        # 模板按名字明确指向玩家；重名不能猜目标，也不能把这一回合交给拒绝分支。
+        population = effects.players.values() if effects is not None else players.values()
+        names = [p.name for p in population if p.alive]
+        enemies = [p for p in enemies if names.count(p.name) == 1]
         if not enemies:
-            return Declaration(me.player_id, "场上没别人了，我收手。")
+            return Declaration(me.player_id, NORMAL_HEAL.format(n=1))
         lim = _limits(pack, turn_no)
         if self.difficulty == "easy":
             decl = self._declare_easy(me, enemies, lim)
@@ -174,14 +151,55 @@ class BotBrain:
                       difficulty=self.difficulty, text=decl.content[:120])  # [TEMP-LOG]
         return decl
 
+    def _count(self, player):
+        return len(player.attributes) + (sum(player.player_id in e.spec.targets
+            for e in self.effects.active.values()) if self.effects else 0)
+
+    def _defended(self, player):
+        return any(a.value > 0 and (a.attr_type == "defense" or a.shield or a.damage_reduction)
+                   for a in player.attributes.values()) or bool(self.effects and any(
+            any(self.effects.passives(player.player_id, kind)) for kind in ("armor", "shield", "reduction")))
+
+    def _frozen(self, player):
+        return any(a.freeze for a in player.attributes.values()) or bool(
+            self.effects and self.effects.frozen(player.player_id))
+
+    def _upgrade(self, me, lim):
+        if self.effects:
+            for effect, _, action in self.effects.passives(me.player_id, "armor"):
+                if (not effect.spec.protected and effect.spec.targets == [me.player_id]
+                        and action.amount < lim.max_initial):
+                    return Declaration(me.player_id, UPGRADE_ARMOR.format(attr=effect.spec.name,
+                        effect_id=effect.effect_id, value=min(lim.max_initial, action.amount + 3)))
+        return None
+
+    def _dispel(self, me, enemies, lim):
+        candidates = []
+        for enemy in enemies:
+            for attr in enemy.attributes.values():
+                if (not attr.indestructible and not attr.freeze and attr.per_turn >= 0
+                        and attr.value > 0):
+                    candidates.append((bool(attr.shield), attr.value, enemy, attr.name, attr.attr_id))
+            if self.effects:
+                for effect in self.effects.active.values():
+                    spec = effect.spec
+                    if (enemy.player_id in spec.targets and me.player_id not in spec.targets
+                            and not spec.protected
+                            and all(a.kind in ("armor", "shield", "reduction", "heal") for a in spec.actions)):
+                        candidates.append((any(a.kind == "shield" for a in spec.actions),
+                            sum(a.amount or 1 for a in spec.actions), enemy, spec.name, effect.effect_id))
+        if not candidates:
+            return None
+        _, _, enemy, name, key = max(candidates, key=lambda item: item[:2])
+        return Declaration(me.player_id, DISPEL_ATTACK.format(target=enemy.name, attr=name,
+            effect_id=key, dmg=max(1, round(lim.hard * 0.8))))
+
     # ------------------------------------------------------------ 简单
     def _declare_easy(self, me: Player, enemies: list[Player], lim: _Limits) -> Declaration:
         roll = self.rng.random()
         if self._hp_ratio(me) < 0.3 and roll < 0.25:
             n = max(1, min(lim.hard, 3 + self.rng.randint(0, 2)))
             return Declaration(me.player_id, EASY_HEAL.format(n=n))
-        if roll < 0.3:
-            return Declaration(me.player_id, self.rng.choice(HESITATE_TEMPLATES))
         target = self.rng.choice(enemies)
         dmg = max(1, min(lim.hard, 2 + self.rng.randint(0, 3)))
         return Declaration(
@@ -199,19 +217,18 @@ class BotBrain:
             n = max(1, min(lim.hard, round(lim.cap * 0.6)))
             return Declaration(me.player_id, NORMAL_HEAL.format(n=n))
         if (
-            not _best_attr(me, "defense")
-            and len(me.attributes) < lim.max_attrs
+            not self._defended(me)
+            and self._count(me) < lim.max_attrs
             and roll < 0.3
         ):
             return Declaration(
                 me.player_id,
-                CREATE_ATTR.format(
+                CREATE_ARMOR.format(
                     name="布衣护甲",
+                    turns=4,
                     value=max(2, min(lim.max_initial, round(lim.cap * 0.5))),
                 ),
             )
-        if roll > 0.92:
-            return Declaration(me.player_id, self.rng.choice(GUARD_TEMPLATES))
         dmg = max(3, min(lim.hard, round(lim.cap * 0.65)))
         return Declaration(
             me.player_id,
@@ -229,8 +246,8 @@ class BotBrain:
         # 血线健康时冻住最强敌人，抢两个回合的主动权
         if (
             self._hp_ratio(me) > 0.5
-            and not any(a.freeze for a in target.attributes.values())
-            and len(target.attributes) < lim.max_attrs
+            and not self._frozen(target)
+            and self._count(target) < lim.max_attrs
             and 0.65 <= roll < 0.75
         ):
             return Declaration(
@@ -238,32 +255,21 @@ class BotBrain:
             )
 
         atk = _best_attr(me, "attack")
-        if atk is not None and atk.value < atk.cap and roll < 0.4:
-            value = min(atk.cap, max(atk.value + 3, round(lim.cap * 0.8)))
-            return Declaration(
-                me.player_id, UPGRADE_ATTR.format(attr=atk.name, value=value)
-            )
+        upgrade = self._upgrade(me, lim) if roll < 0.4 else None
+        if upgrade:
+            return upgrade
 
-        if len(me.attributes) < lim.max_attrs and roll < 0.55:
-            if atk is None:
+        if self._count(me) < lim.max_attrs and roll < 0.55:
+            if not self._defended(me):
                 return Declaration(
                     me.player_id,
-                    CREATE_ATTR.format(
-                        name="断钢刀",
-                        value=min(lim.max_initial, max(3, round(lim.cap * 0.7))),
-                    ),
-                )
-            if _best_attr(me, "defense") is None:
-                return Declaration(
-                    me.player_id,
-                    CREATE_ATTR.format(
+                    CREATE_ARMOR.format(
                         name="玄铁护甲",
+                        turns=4,
                         value=min(lim.max_initial, max(3, round(lim.cap * 0.6))),
                     ),
                 )
 
-        if roll > 0.94:
-            return Declaration(me.player_id, self.rng.choice(GUARD_TEMPLATES))
 
         dmg = max(4, min(lim.hard, round(lim.hard * 0.85)))
         if atk is not None:
@@ -287,51 +293,34 @@ class BotBrain:
             n = max(1, min(lim.hard, round(lim.cap * 1.2)))
             return Declaration(me.player_id, INFERNO_HEAL.format(n=n))
 
-        victim, victim_attr = _best_enemy_attr(enemies)
-        if victim is not None and victim_attr is not None and roll < 0.45:
-            dmg = max(5, min(lim.hard, round(lim.hard * 0.8)))
-            return Declaration(
-                me.player_id,
-                SABOTAGE_ATTR.format(
-                    target=victim.name, attr=victim_attr.name, dmg=dmg
-                ),
-            )
+        dispel = self._dispel(me, enemies, lim) if roll < 0.45 else None
+        if dispel:
+            return dispel
 
         # 炼狱：对手没被冻时优先抢控制权，冻住之后再安心输出
         if (
-            not any(a.freeze for a in target.attributes.values())
-            and len(target.attributes) < lim.max_attrs
+            not self._frozen(target)
+            and self._count(target) < lim.max_attrs
             and 0.5 <= roll < 0.62
         ):
             return Declaration(
                 me.player_id, FREEZE_ATTR.format(target=target.name, turns=2)
             )
 
-        atk = _best_attr(me, "attack")
-        if atk is not None and atk.value < atk.cap and roll < 0.6:
-            value = min(atk.cap, max(atk.value + 4, round(lim.cap * 0.9)))
-            return Declaration(
-                me.player_id, UPGRADE_ATTR.format(attr=atk.name, value=value)
-            )
-
-        if len(me.attributes) < lim.max_attrs and atk is None and roll < 0.7:
-            return Declaration(
-                me.player_id,
-                CREATE_ATTR.format(
-                    name="裂空掌",
-                    value=min(lim.max_initial, max(4, round(lim.cap * 0.8))),
-                ),
-            )
+        upgrade = self._upgrade(me, lim) if roll < 0.6 else None
+        if upgrade:
+            return upgrade
 
         if (
-            len(me.attributes) < lim.max_attrs
-            and _best_attr(me, "defense") is None
-            and roll > 0.85
+            self._count(me) < lim.max_attrs
+            and not self._defended(me)
+            and roll < 0.85
         ):
             return Declaration(
                 me.player_id,
-                CREATE_ATTR.format(
-                    name="金刚护盾",
+                CREATE_ARMOR.format(
+                    name="金刚护甲",
+                    turns=4,
                     value=min(lim.max_initial, max(3, round(lim.cap * 0.6))),
                 ),
             )

@@ -1,5 +1,5 @@
-import { addFloat, getState, resetRoom, setState, toast } from './store'
-import type { LedgerEntry, PrivateAttr } from './types'
+import { addFloat, getState, resetRoom, setState } from './store'
+import type { LedgerEntry } from './types'
 
 let ws: WebSocket | null = null
 let nickname = ''
@@ -7,6 +7,8 @@ let manualClose = false
 let retry = 0
 let ledgerSeq = 0
 let pendingAction: (() => void) | null = null
+let authenticated = false
+let reconnectTimer: number | null = null
 
 export function send(msg: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -18,7 +20,7 @@ export function send(msg: Record<string, unknown>) {
 export function ensure(name: string, action: () => void) {
   localStorage.setItem('yap.name', name)
   const state = getState()
-  if (state.session && ws && ws.readyState === WebSocket.OPEN) {
+  if (authenticated && state.session && ws && ws.readyState === WebSocket.OPEN) {
     action()
     return
   }
@@ -34,12 +36,6 @@ export function connectWs(name: string) {
   open()
 }
 
-export function disconnectWs() {
-  manualClose = true
-  ws?.close()
-  ws = null
-}
-
 /** 主动离开当前房间：通知服务端，并立刻清空本地房间状态（回到首页）。 */
 export function leaveRoom() {
   send({ type: 'leave_room' })
@@ -48,11 +44,19 @@ export function leaveRoom() {
 }
 
 function open() {
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  if (ws && ws.readyState !== WebSocket.CLOSED) return
+  authenticated = false
   setState({ connecting: true })
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  ws = new WebSocket(`${scheme}//${location.host}/ws`)
+  const socket = new WebSocket(`${scheme}//${location.host}/ws`)
+  ws = socket
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket) return
     retry = 0
     setState({ connected: true, connecting: false, error: null })
     const token = localStorage.getItem('yap.token')
@@ -63,7 +67,8 @@ function open() {
     }
   }
 
-  ws.onmessage = (ev) => {
+  socket.onmessage = (ev) => {
+    if (ws !== socket) return
     try {
       handle(JSON.parse(ev.data))
     } catch {
@@ -71,12 +76,15 @@ function open() {
     }
   }
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws !== socket) return
+    authenticated = false
+    ws = null
     setState({ connected: false, connecting: false })
     if (!manualClose) {
       const delay = Math.min(8000, 400 * 2 ** retry)
       retry += 1
-      window.setTimeout(open, delay)
+      reconnectTimer = window.setTimeout(open, delay)
     }
   }
 }
@@ -98,6 +106,11 @@ function handle(msg: any) {
       return
 
     case 'session': {
+      authenticated = true
+      if (msg.room_id === null) {
+        ledgerSeq = 0
+        resetRoom()
+      }
       localStorage.setItem('yap.token', msg.token)
       localStorage.setItem('yap.name', msg.name)
       setState({
@@ -119,10 +132,8 @@ function handle(msg: any) {
 
     case 'snapshot': {
       ledgerSeq = 0
-      const attrs: PrivateAttr[] = msg.private?.attributes ?? []
       setState({
         room: msg.state,
-        myAttrs: attrs,
         ledger: msg.ledger ?? [],
         result: msg.state?.result ?? null,
       })
@@ -137,7 +148,6 @@ function handle(msg: any) {
         adjudication: null,
         result: null,
       })
-      toast('对局开始', 'good')
       return
 
     case 'turn_begin': {
@@ -209,7 +219,6 @@ function handle(msg: any) {
       return
 
     case 'judge_fallback':
-      toast(`裁判降级：${msg.reason}`, 'warn')
       if (msg.ledger_seq) {
         pushLedger({
           seq: msg.ledger_seq,
@@ -245,19 +254,9 @@ function handle(msg: any) {
       return
     }
 
-    case 'attribute_opened':
-      toast(`${msg.player_name ?? '有人'} 多了个属性「${msg.name}」`, 'info')
-      return
-
-    case 'attribute_removed':
-      toast(
-        `${msg.player_name ?? '有人'} 的「${msg.name}」${msg.reason === 'expired' ? '到时限消失了' : '没了'}`,
-        'warn',
-      )
-      return
-
-    case 'frozen_skip':
-      toast(`${msg.name} 被「${msg.attr}」冻住，无法行动`, 'warn')
+    case 'effect_event':
+      pushLedger({ seq: msg.ledger_seq, turn_no: msg.turn_no, actor: null,
+        type: 'system', content: msg.narrative, intensity: null, status: 'active' })
       return
 
     case 'disaster': {
@@ -266,46 +265,10 @@ function handle(msg: any) {
           ? { room: { ...s.room, disaster: { level: msg.level, damage: msg.damage } } }
           : {},
       )
-      if (msg.level === 1) toast(`天灾降临：全场每回合受到 ${msg.damage} 点侵蚀`, 'warn')
-      else toast(`天灾 ${msg.level} 级：全场 -${msg.damage} HP`, 'warn')
-      return
-    }
-
-    case 'inheritance':
-      toast(
-        `${msg.killer_name} 继承了 ${msg.victim_name} 的「${msg.source_name}」（${msg.source_value} → ${msg.value}）`,
-        'good',
-      )
-      return
-
-    case 'attribute_private': {
-      const attr: PrivateAttr | undefined = msg.attr
-      if (!attr) return
-      if (msg.notice === '删掉了') {
-        setState((s) => ({ myAttrs: s.myAttrs.filter((a) => a.attr_id !== attr.attr_id) }))
-        toast(`「${attr.name}」没了`, 'warn')
-        return
-      }
-      setState((s) => {
-        const exists = s.myAttrs.some((a) => a.attr_id === attr.attr_id)
-        if (exists) {
-          return {
-            myAttrs: s.myAttrs.map((a) =>
-              a.attr_id === attr.attr_id
-                ? { ...a, ...attr, narrative: a.narrative, attr_type: a.attr_type }
-                : a,
-            ),
-          }
-        }
-        return { myAttrs: [...s.myAttrs, attr] }
-      })
-      if (msg.notice === '新属性') toast(`「${attr.name}」记上了`, 'good')
-      if (msg.notice === '变化') toast(`「${attr.name}」现在是 ${attr.value}`, 'info')
       return
     }
 
     case 'player_dead':
-      toast(`${msg.name} 出局`, 'warn')
       setState((s) => {
         if (!s.room) return {}
         return {
@@ -320,10 +283,9 @@ function handle(msg: any) {
       return
 
     case 'game_over':
-      toast(msg.winner_name ? `${msg.winner_name} 获胜` : '无人幸存', 'good')
       setState((s) => ({
         room: s.room ? { ...s.room, over: true, phase: 'over' } : s.room,
-        result: { winner_name: msg.winner_name ?? null, ranking: msg.ranking ?? [] },
+        result: { winner_name: msg.winner_name ?? null, ranking: msg.ranking ?? [], reason: msg.reason },
       }))
       return
 
@@ -333,7 +295,6 @@ function handle(msg: any) {
         ledger: [],
         declaration: null,
         adjudication: null,
-        myAttrs: [],
         chats: [],
         result: null,
       })
@@ -355,19 +316,22 @@ function handle(msg: any) {
       return
 
     case 'kicked':
-      toast(msg.reason ?? '你被移出了房间', 'warn')
-      setState({ room: null, myAttrs: [], ledger: [], declaration: null })
+      ledgerSeq = 0
+      resetRoom()
+      setState({ error: msg.reason ?? '你被移出了房间' })
       return
 
     case 'error':
-      toast(msg.message, 'warn')
       setState({ error: msg.message })
       if (msg.fatal) {
         localStorage.removeItem('yap.token')
-        setState({ room: null, myAttrs: [] })
+        ledgerSeq = 0
+        resetRoom()
+        setState({ session: null })
         manualClose = true
+        authenticated = false
         ws?.close()
-        window.setTimeout(() => {
+        reconnectTimer = window.setTimeout(() => {
           manualClose = false
           retry = 0
           open()

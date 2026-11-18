@@ -119,7 +119,7 @@ def clamp_new_attr(
     max_cap: int,
 ) -> tuple[int, int]:
     """新建属性的数值边界：value ∈ [1, max_initial]，cap ∈ [value, max_cap]。"""
-    value = max(1, min(int(max_initial), int(value)))
+    value = max(1, min(int(max_initial), int(max_cap), int(value)))
     cap = max(value, min(int(max_cap), int(cap)))
     return value, cap
 

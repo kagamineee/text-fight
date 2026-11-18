@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from . import debug_log  # [TEMP-LOG] 临时调试日志，稳定后与调用点一起删除
-from .formulas import IntensityRules, clamp_to_hard
+from .formulas import IntensityRules, clamp_hp_effects, clamp_to_hard
 from .models import Declaration, Player
 
 DURATION_PATTERN = re.compile(r"(\d+)\s*(?:个)?回合")
@@ -182,14 +182,11 @@ def adjudicate(
     sentences: list[str] = []
 
     if targets and wants_damage and not wants_heal:
-        pierce = "无视" in text
         for target in targets:
             actual = min(amount, target.hp)
             if actual <= 0:
                 continue
             entry = {"player_id": target.player_id, "hp_delta": -actual}
-            if pierce:
-                entry["pierce"] = True
             result.effects.append(entry)
             if target.player_id == actor.player_id:
                 sentences.append(f"{actor.name} 把自己弄掉了 {actual} 点血。")
@@ -234,7 +231,7 @@ def adjudicate(
                 entry["shield"] = True
                 entry["duration"] = duration
             elif any(w in text for w in PER_TURN_WORDS) and targets:
-                entry["per_turn"] = -value
+                entry["per_turn"] = value if wants_heal and not wants_damage else -value
                 entry["duration"] = duration
                 if targets[0].player_id != actor.player_id:
                     entry["owner"] = targets[0].player_id
@@ -281,7 +278,15 @@ def adjudicate(
     if not sentences:
         sentences.append(f"{actor.name} 说了一通，场上没人掉血。")
 
+    rules = IntensityRules(pack.intensity.cap_base, pack.intensity.cap_growth,
+                           pack.intensity.ceiling_factor)
+    result.effects, clamped = clamp_hp_effects(
+        result.effects, {pid: p.hp for pid, p in players.items() if p.alive},
+        {pid: p.hp_max for pid, p in players.items() if p.alive}, rules.hard(turn_no),
+    )
     result.narrative = "".join(sentences)
+    if clamped:
+        result.narrative = "行动已按本回合总强度上限结算，实际效果见结算记录。"
     debug_log.log("stub_verdict", turn=turn_no, actor=actor.name,
                   effects=result.effects, attr_changes=result.attr_changes,
                   narrative=result.narrative[:200])  # [TEMP-LOG]

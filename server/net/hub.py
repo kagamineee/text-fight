@@ -21,6 +21,7 @@ class Hub:
 
     async def bind(self, player_id: str, room_id: str | None, ws: WebSocket) -> None:
         async with self._lock:
+            self._detach(player_id)
             self._sockets[player_id] = ws
             if room_id:
                 self._rooms.setdefault(room_id, set()).add(player_id)
@@ -38,13 +39,30 @@ class Hub:
             if ws is not None and self._sockets.get(player_id) is not ws:
                 return False
             self._sockets.pop(player_id, None)
-            if room_id and room_id in self._rooms:
-                self._rooms[room_id].discard(player_id)
+            self._detach(player_id)
             return True
 
-    async def move(self, player_id: str, room_id: str) -> None:
+    def _detach(self, player_id: str) -> None:
+        for room_id, members in list(self._rooms.items()):
+            members.discard(player_id)
+            if not members:
+                self._rooms.pop(room_id, None)
+
+    def is_current(self, player_id: str, ws: WebSocket) -> bool:
+        return self._sockets.get(player_id) is ws
+
+    def is_connected(self, player_id: str) -> bool:
+        return player_id in self._sockets
+
+    async def move(self, player_id: str, room_id: str | None) -> None:
         async with self._lock:
-            self._rooms.setdefault(room_id, set()).add(player_id)
+            self._detach(player_id)
+            if room_id:
+                self._rooms.setdefault(room_id, set()).add(player_id)
+
+    async def drop_room(self, room_id: str) -> None:
+        async with self._lock:
+            self._rooms.pop(room_id, None)
 
     def members(self, room_id: str) -> set[str]:
         return set(self._rooms.get(room_id, set()))

@@ -25,9 +25,8 @@ class LedgerType(str, Enum):
     ATTRIBUTE_OPEN = "attribute_open"
     DEATH = "death"
     DISASTER = "disaster"
+    EVENT = "event"
     INHERITANCE = "inheritance"
-    APPEAL = "appeal"
-    PRECEDENT = "precedent"
     SYSTEM = "system"
 
 
@@ -41,7 +40,6 @@ class Attribute:
     initial: int
     cap: int
     exchange_rate: float
-    consume_rule: str
     value: int
     opened_turn: int
     expires_turn: int = 0  # 0 表示永久；大于 0 表示该回合结束后删除
@@ -87,7 +85,6 @@ class Attribute:
             "cap": self.cap,
             "initial": self.initial,
             "exchange_rate": self.exchange_rate,
-            "consume_rule": self.consume_rule,
             "opened_turn": self.opened_turn,
             "expires_turn": self.expires_turn,
             "shield": self.shield,
@@ -113,7 +110,6 @@ class Player:
     alive: bool = True
     connected: bool = True
     ready: bool = False
-    appeals_left: int = 2
     attributes: dict[str, Attribute] = field(default_factory=dict)
     hp_peak: int = 0
     survived_turns: int = 0
@@ -131,7 +127,6 @@ class Player:
             "alive": self.alive,
             "connected": self.connected,
             "ready": self.ready,
-            "appeals_left": self.appeals_left,
             "attributes": [a.public_view() for a in self.attributes.values()],
         }
 

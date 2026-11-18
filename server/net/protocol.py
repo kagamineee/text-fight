@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from typing import Literal, Optional, Union
+from typing import Literal, Union
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -29,6 +29,7 @@ class CreateRoomIn(_In):
     type: Literal["create_room"]
     password: str = Field(min_length=4, max_length=64)
     name: str = Field(default="", max_length=16)
+    pack_id: str = Field(default="", max_length=64)
 
 
 class JoinRoomIn(_In):
@@ -81,17 +82,6 @@ class ChatIn(_In):
     channel: Literal["table", "ghost"] = "table"
 
 
-class OpenAttributeIn(_In):
-    type: Literal["open_attribute"]
-    name: str = Field(min_length=1, max_length=16)
-    narrative: str = Field(default="", max_length=200)
-    attr_type: Literal["attack", "defense", "utility"]
-    initial: int = Field(ge=1, le=99)
-    cap: int = Field(ge=1, le=999)
-    exchange_rate: float = Field(gt=0, le=10)
-    consume_rule: str = Field(default="", max_length=200)
-
-
 class ReconnectIn(_In):
     type: Literal["reconnect"]
     token: str
@@ -114,7 +104,6 @@ _INBOUND: dict[str, type[BaseModel]] = {
     "return_lobby": ReturnLobbyIn,
     "declare": DeclareIn,
     "chat": ChatIn,
-    "open_attribute": OpenAttributeIn,
     "reconnect": ReconnectIn,
     "heartbeat": HeartbeatIn,
 }
@@ -132,7 +121,6 @@ InboundMessage = Union[
     ReturnLobbyIn,
     DeclareIn,
     ChatIn,
-    OpenAttributeIn,
     ReconnectIn,
     HeartbeatIn,
 ]
