@@ -4,7 +4,7 @@
 - 四阶段 DECLARE → ADJUDICATE → SETTLE → NEXT，时限全部由服务端驱动。
 - 玩家的输入只有一段自由文本；效果与目标由裁判判断。
 - 受到伤害时没有即时回应，直接按当前文本与属性结算。
-- 一切状态变更都经过 _record（写事件）与内存投影，保证事件溯源可重建。
+- 一切状态变更都经过 _record（写事件）与内存投影，保证广播与界面一致。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Optional
 
 from . import attributes as attr_mod
 from . import debug_log  # [TEMP-LOG] 临时调试日志，稳定后与调用点一起删除
-from . import judge_ai, summary
+from . import disaster, inheritance, judge_ai, summary
 from .bots import BotBrain
 from .formulas import apply_armor_wear, effective_defense, resolve_damage
 from .models import (
@@ -260,7 +260,12 @@ class Room:
             "over": self.over,
             "result": self.result_view(),
             "world_summary": self.world_summary,
+            "disaster": self.disaster_view(),
         }
+
+    def disaster_view(self) -> dict:
+        level = disaster.level_for(self.pack, self.turn_no)
+        return {"level": level, "damage": disaster.damage_for(self.pack, level)}
 
     def snapshot_for(self, pid: str) -> dict:
         me = self.players.get(pid)
@@ -396,6 +401,84 @@ class Room:
             )
         await self.broadcast_state()
 
+    async def _run_disaster(self, alive: list[Player]) -> list[Player]:
+        """天灾：环境伤害，无视护甲与免伤，用于强制收束战局。"""
+        level = disaster.level_for(self.pack, self.turn_no)
+        damage = disaster.damage_for(self.pack, level)
+        if level <= 0 or damage <= 0:
+            return alive
+
+        changes: list[dict] = []
+        deaths: list[str] = []
+        for p in alive:
+            before = p.hp
+            p.hp = max(0, before - damage)
+            dead = p.hp == 0
+            if dead:
+                p.alive = False
+                deaths.append(p.player_id)
+            changes.append(
+                {
+                    "player_id": p.player_id,
+                    "delta": p.hp - before,
+                    "hp": p.hp,
+                    "dead": dead,
+                }
+            )
+        if not changes:
+            return alive
+
+        # 账本逐回合记录，保证回看时血条变化有据可查；提示只在等级提升时推送
+        self._record(
+            LedgerType.DISASTER,
+            disaster.narrative(self.pack.disaster, self.turn_no, level, damage),
+            payload={
+                "kind": "disaster",
+                "level": level,
+                "damage": damage,
+                "changes": changes,
+            },
+        )
+        if disaster.is_new_level(self.pack.disaster, self.turn_no):
+            await self._broadcast(
+                {
+                    "type": "disaster",
+                    "turn_no": self.turn_no,
+                    "level": level,
+                    "damage": damage,
+                    "changes": changes,
+                }
+            )
+        for c in changes:
+            await self._broadcast(
+                {
+                    "type": "hp_update",
+                    "player_id": c["player_id"],
+                    "hp": c["hp"],
+                    "hp_max": self.players[c["player_id"]].hp_max,
+                    "delta": c["delta"],
+                }
+            )
+        for pid in deaths:
+            victim = self.players[pid]
+            self._record(
+                LedgerType.DEATH,
+                f"{victim.name} 在天灾中出局。",
+                actor=pid,
+                payload={"player_id": pid, "killer": None, "cause": "disaster"},
+            )
+            await self._broadcast(
+                {
+                    "type": "player_dead",
+                    "player_id": pid,
+                    "name": victim.name,
+                    "cause": "disaster",
+                    "killer": None,
+                }
+            )
+        await self.broadcast_state()
+        return [p for p in alive if p.alive]
+
     async def _run_per_turn(self, alive: list[Player]) -> list[Player]:
         """周期效果结算：带 per_turn 的属性（中毒、灼烧、持续回复等）每回合自动生效。
 
@@ -478,6 +561,11 @@ class Room:
             if self.turn_no > 1:
                 p.hp = min(p.hp_max, p.hp + self.pack.hp.regen)
             p.hp_peak = max(p.hp_peak, p.hp)
+
+        alive = await self._run_disaster(alive)
+        if not alive:
+            await self._finish([])
+            return
 
         alive = await self._run_per_turn(alive)
         if not alive:
@@ -647,6 +735,7 @@ class Room:
 
         # 属性先落地（新建 / 变化），只给本人回执
         attr_updates: list[dict] = []
+        blocked_names: set[str] = set()
         for change in verdict.attr_changes:
             owner = self.players.get(change.get("owner"))
             if owner is None:
@@ -655,6 +744,23 @@ class Room:
                 continue
             if change.get("remove"):
                 attr_id = str(change.get("attr_id"))
+                attr = owner.attributes.get(attr_id)
+                if attr is not None and attr.indestructible and actor.player_id != owner.player_id:
+                    debug_log.log("attr_apply_blocked", turn=self.turn_no,
+                                  reason="indestructible", owner=owner.name,
+                                  attr=attr.name, actor=actor.name)  # [TEMP-LOG]
+                    self._record(
+                        LedgerType.SYSTEM,
+                        f"{owner.name} 的「{attr.name}」不可破坏，没有被摧毁。",
+                        payload={
+                            "kind": "attr_indestructible",
+                            "owner": owner.player_id,
+                            "attr_id": attr_id,
+                            "actor": actor.player_id,
+                        },
+                    )
+                    blocked_names.add(attr.name)
+                    continue
                 attr = owner.attributes.pop(attr_id, None)
                 if attr is None:
                     debug_log.log("attr_apply_miss", turn=self.turn_no,
@@ -684,6 +790,12 @@ class Room:
                     debug_log.log("attr_apply_miss", turn=self.turn_no,
                                   reason="dup-name", owner=owner.name, change=change)  # [TEMP-LOG]
                     continue
+                # 不可破坏的属性既然没被移除，同一次裁定里「偷到手」的那份也不成立
+                if change.get("name") in blocked_names:
+                    debug_log.log("attr_apply_blocked", turn=self.turn_no,
+                                  reason="indestructible-steal", owner=owner.name,
+                                  attr=change.get("name"))  # [TEMP-LOG]
+                    continue
                 attr = attr_mod.create_attribute(
                     owner_id=owner.player_id,
                     name=str(change.get("name", "")),
@@ -697,6 +809,11 @@ class Room:
                     shield=bool(change.get("shield", False)),
                     freeze=bool(change.get("freeze", False)),
                     per_turn=int(change.get("per_turn", 0)),
+                    indestructible=bool(change.get("indestructible", False)),
+                    damage_reduction=int(change.get("damage_reduction", 0)),
+                    shield_charges=int(change.get("shield_charges", 0)),
+                    lethal_only=bool(change.get("lethal_only", False)),
+                    block_heal_pct=int(change.get("block_heal_pct", 0)),
                 )
                 owner.attributes[attr.attr_id] = attr
                 debug_log.log("attr_apply", turn=self.turn_no, action="created",
@@ -720,6 +837,11 @@ class Room:
                         "value": attr.value,
                         "cap": attr.cap,
                         "expires_turn": attr.expires_turn,
+                        "indestructible": attr.indestructible,
+                        "damage_reduction": attr.damage_reduction,
+                        "shield_charges": attr.shield_charges,
+                        "lethal_only": attr.lethal_only,
+                        "block_heal_pct": attr.block_heal_pct,
                     }
                 )
                 await self._send(
@@ -761,26 +883,89 @@ class Room:
             absorbed = 0
             if delta < 0 and not effect.get("pierce"):
                 # pierce：宣言明确声明无视免伤特效，本次穿透（属性保留）
+                incoming = -delta
+                defense, used = effective_defense(target.attributes.values())
+                projected = resolve_damage(incoming, defense) if defense > 0 and used else incoming
+                reduction = max(
+                    (a.damage_reduction for a in target.attributes.values()), default=0
+                )
+                if reduction > 0:
+                    projected = max(1, round(projected * (100 - reduction) / 100))
+                lethal = projected >= target.hp
+                # 只挡致命伤害的护盾仅在必死这一击生效；普通护盾对所有伤害生效
                 shield_attr = next(
-                    (a for a in target.attributes.values() if a.shield), None
+                    (
+                        a
+                        for a in target.attributes.values()
+                        if a.shield and (lethal or not a.lethal_only)
+                    ),
+                    None,
                 )
                 if shield_attr is not None:
                     # 能力优先级最高：免伤类属性存在期间，宣言没先破坏它，
                     # 伤害一律无效（引擎硬保证，不依赖裁判自觉）
-                    applied.append(
-                        {
-                            "player_id": pid,
-                            "hp_delta": 0,
-                            "hp": target.hp,
-                            "absorbed": 0,
-                            "shield": shield_attr.name,
-                        }
-                    )
+                    block = {
+                        "player_id": pid,
+                        "hp_delta": 0,
+                        "hp": target.hp,
+                        "absorbed": 0,
+                        "shield": shield_attr.name,
+                    }
+                    # 次数护盾：每次挡下扣 1，归零即消失
+                    if shield_attr.shield_charges > 0:
+                        shield_attr.shield_charges -= 1
+                        block["shield_left"] = shield_attr.shield_charges
+                        if shield_attr.shield_charges == 0:
+                            target.attributes.pop(shield_attr.attr_id, None)
+                            attr_updates.append(
+                                {
+                                    "owner": target.player_id,
+                                    "attr_id": shield_attr.attr_id,
+                                    "name": shield_attr.name,
+                                    "remove": True,
+                                }
+                            )
+                            await self._send(
+                                target.player_id,
+                                {
+                                    "type": "attribute_private",
+                                    "notice": "护盾次数耗尽",
+                                    "attr": shield_attr.private_view(),
+                                },
+                            )
+                        else:
+                            await self._send(
+                                target.player_id,
+                                {
+                                    "type": "attribute_private",
+                                    "notice": "挡下一次",
+                                    "attr": shield_attr.private_view(),
+                                },
+                            )
+                    applied.append(block)
+                    # 格挡触发：按各自最大生命的百分比为所有存活玩家回血
+                    if shield_attr.block_heal_pct > 0:
+                        for p in self.players.values():
+                            if not p.alive:
+                                continue
+                            gain = max(1, round(p.hp_max * shield_attr.block_heal_pct / 100))
+                            before_hp = p.hp
+                            p.hp = min(p.hp_max, before_hp + gain)
+                            if p.hp == before_hp:
+                                continue
+                            applied.append(
+                                {
+                                    "player_id": p.player_id,
+                                    "hp_delta": p.hp - before_hp,
+                                    "hp": p.hp,
+                                    "absorbed": 0,
+                                    "heal_source": shield_attr.name,
+                                }
+                            )
                     continue
-                defense, used = effective_defense(target.attributes.values())
                 if defense > 0 and used:
-                    resolved = resolve_damage(-delta, defense)
-                    absorbed = -delta - resolved
+                    resolved = resolve_damage(incoming, defense)
+                    absorbed = incoming - resolved
                     delta = -resolved
                     if absorbed > 0:
                         for wear in apply_armor_wear(used, absorbed):
@@ -802,6 +987,9 @@ class Room:
                                         "attr": attr.private_view(),
                                     },
                                 )
+                # 百分比减伤：护甲抵扣后，剩余伤害再按比例削减
+                if reduction > 0:
+                    delta = -max(1, round(-delta * (100 - reduction) / 100))
             before = target.hp
             target.hp = max(0, min(target.hp_max, before + delta))
             actual = target.hp - before
@@ -824,8 +1012,15 @@ class Room:
         for item in applied:
             target = self.players[item["player_id"]]
             if item.get("shield"):
+                left = item.get("shield_left")
+                left_txt = f"，剩余可挡 {left} 次" if left is not None else ""
                 settle_bits.append(
-                    f"{target.name} 的「{item['shield']}」生效，伤害被完全挡下"
+                    f"{target.name} 的「{item['shield']}」生效，伤害被完全挡下{left_txt}"
+                )
+            elif item.get("heal_source"):
+                settle_bits.append(
+                    f"{target.name} 因「{item['heal_source']}」格挡回血 {item['hp_delta']:+d} → "
+                    f"{item['hp']}/{target.hp_max}"
                 )
             elif item.get("absorbed"):
                 settle_bits.append(
@@ -911,9 +1106,73 @@ class Room:
                     "killer": killer,
                 }
             )
+            await self._grant_inheritance(victim, killer)
 
         await self.broadcast_state()
         self._schedule_summary()
+
+    async def _grant_inheritance(self, victim: Player, killer_id: Optional[str]) -> None:
+        """击杀继承：凶手拿走死者最强的属性外壳，数值按包比例折算。
+
+        自伤、天灾（killer=None）、凶手已死或属性满额时不继承。
+        """
+        killer = self.players.get(killer_id) if killer_id else None
+        if killer is None or killer.player_id == victim.player_id or not killer.alive:
+            return
+        src = inheritance.pick_legacy(victim)
+        if src is None:
+            return
+        if len(killer.attributes) >= self.pack.attributes.max_count:
+            self._record(
+                LedgerType.INHERITANCE,
+                f"{killer.name} 想继承 {victim.name} 的「{src.name}」，但自身能力已满，只能作罢。",
+                payload={
+                    "kind": "inheritance",
+                    "killer": killer.player_id,
+                    "victim": victim.player_id,
+                    "name": src.name,
+                    "granted": False,
+                },
+            )
+            return
+        attr = inheritance.build_inherited(
+            killer=killer,
+            src=src,
+            victim_name=victim.name,
+            ratio=self.pack.inheritance.power_ratio,
+            turn_no=self.turn_no,
+            max_cap=self.pack.attributes.max_cap,
+        )
+        killer.attributes[attr.attr_id] = attr
+        self._record(
+            LedgerType.INHERITANCE,
+            f"{killer.name} 从 {victim.name} 的遗骸中继承了「{src.name}」："
+            f"{src.value} → {attr.value}。",
+            actor=killer.player_id,
+            payload={
+                "kind": "inheritance",
+                "killer": killer.player_id,
+                "victim": victim.player_id,
+                "name": attr.name,
+                "source_name": src.name,
+                "source_value": src.value,
+                "value": attr.value,
+                "granted": True,
+            },
+        )
+        await self._broadcast(
+            {
+                "type": "inheritance",
+                "killer": killer.player_id,
+                "killer_name": killer.name,
+                "victim": victim.player_id,
+                "victim_name": victim.name,
+                "name": attr.name,
+                "source_name": src.name,
+                "source_value": src.value,
+                "value": attr.value,
+            }
+        )
 
     def _schedule_summary(self) -> None:
         if self.turn_no < 10 or self.turn_no % 10 != 0:

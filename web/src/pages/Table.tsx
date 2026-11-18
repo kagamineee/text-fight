@@ -135,6 +135,14 @@ export default function Table() {
           <b>{actor?.name ?? '—'}</b>
         </div>
         <div className="head-cell">
+          <span className="label">天灾</span>
+          <b className={room.disaster && room.disaster.level > 0 ? 'gold' : 'dim'}>
+            {room.disaster && room.disaster.level > 0
+              ? `Lv.${room.disaster.level} -${room.disaster.damage}`
+              : '—'}
+          </b>
+        </div>
+        <div className="head-cell">
           <Countdown deadline={room.deadline} />
         </div>
         <div className="head-spacer" />

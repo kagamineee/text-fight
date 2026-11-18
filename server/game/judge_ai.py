@@ -66,6 +66,11 @@ class AttrChangeOut(BaseModel):
     shield: Optional[bool] = None
     per_turn: Optional[int] = None
     freeze: Optional[bool] = None  # 冰冻/眩晕类：存在期间目标无法行动
+    indestructible: Optional[bool] = None  # 玩家明确声明「不可破坏」时填 true
+    damage_reduction: Optional[int] = None  # 百分比减伤：0~90
+    shield_charges: Optional[int] = None  # 免伤可抵挡的次数；0 或不填=无限次
+    lethal_only: Optional[bool] = None  # 只抵挡致命伤害：非致命攻击不触发免伤、不消耗次数
+    block_heal_pct: Optional[int] = None  # 每挡下一次伤害，为所有存活玩家回复最大生命的百分比
 
 
 class JudgeOut(BaseModel):
@@ -102,7 +107,13 @@ JUDGE_RULES = """你是这场文字对局的裁判。这是一场鼓励脑洞、
   ① 宣言明确破坏、偷取、删除该属性 → attr_changes 里用 remove（属性没了，伤害照常落地）；
   ② 宣言明确声明无视该特效 → 对该目标的 effects 项填 pierce=true（属性保留，仅本次攻击穿透），伤害照常给；
   ③ 宣言什么都没提 → 对该目标的一切 hp_delta 必须为 0，并在 narrative 里写攻击落空、被该能力挡下。
+- 不可破坏（高于上面三条）：上下文里标注 [不可破坏] 的属性不会被任何人移除、摧毁或窃取，对它的 remove 一律无效，只有到期会自然消失。宣言试图打碎/夺走这类属性时，把它描写成攻势被挡下或弹开，不要写「被击碎 / 被夺走 / 被封印」，也不要为它输出 remove；伤害按该属性的免伤效果正常结算。
+- 玩家明确写下「不可破坏 / 无法被摧毁 / 无法被击碎 / 不会被窃取」这类设定来创建属性时，必须填 indestructible=true；如果这个属性同时是护盾、壁垒、结界一类，再按下面的规则填 shield=true 和 duration。
 - 创建免伤 / 隐匿 / 无敌 / 免疫类属性时必须同时填 shield=true 和 duration（持续回合数），value 随便给个 1 即可。
+- 受伤减伤（「受到的伤害减半」「伤害降低 50%」「只吃三成伤害」这类）必须填 damage_reduction=百分比整数（1~90），不要用「固定数值护甲」或免伤标记代替；它和护甲可以叠加：护甲先抵扣，剩余伤害再按百分比削减。
+- 有限次的护盾（「抵挡 3 次攻击」「挡住接下来 3 次致命攻击」这类）填 shield=true 和 shield_charges=次数；不填 shield_charges 表示无限次。
+- 注意区分：「抵挡 N 次攻击」对所有攻击生效并消耗次数；「抵挡 N 次致命攻击」只对会打死目标的攻击生效、也只在这种情况下消耗次数，必须额外填 lethal_only=true（非致命攻击照常掉血，不要为它写免伤）。
+- 「每抵挡 / 格挡一次，为……回复 X% 最大生命」这类触发效果填 shield=true 和 block_heal_pct=X（X 为 1~100 的整数，受益者是所有存活玩家时也这样填，系统会按各自最大生命结算）。
 - 创建持续伤害或持续回复类效果（中毒、灼烧、每回合回血、诅咒发作等）必须填 per_turn（每回合开始自动结算的 HP 变化：负=掉血，正=回血），系统会每回合自动执行直到该属性被删除或到期，你不需要每回合重复判定。
 - 创建冰冻 / 眩晕 / 束缚 / 麻痹 / 沉默 / 定身类限制效果必须填 freeze=true 和 duration，duration = 目标无法行动的回合数（指目标自己的回合：冻结 3 回合就是他要连续跳过 3 次自己的行动），系统会按次自动跳过直到次数耗尽。冻结期间目标完全无法行动（引擎硬保证），通常也应当配合 hp_delta=0——目标动不了，但也冻不死人。
 - 允许自伤（对自己造成伤害）、给他人回血、给他人添加或修改属性，也能删除属性；一次可以创建多个属性（例如同时得到护甲和武器）。
@@ -121,6 +132,10 @@ OUTPUT_SCHEMA = """{
   "attr_changes": [
     {"owner": "玩家 id", "name": "新属性名", "attr_type": "attack|defense|utility", "value": 3, "cap": 6, "duration": 2, "narrative": "属性来历"},
     {"owner": "玩家 id", "name": "隐匿", "attr_type": "defense", "value": 1, "cap": 1, "duration": 2, "shield": true, "narrative": "遁入虚空，免疫一切伤害"},
+    {"owner": "玩家 id", "name": "不灭壁垒", "attr_type": "defense", "value": 1, "cap": 1, "duration": 3, "shield": true, "indestructible": true, "narrative": "不可破坏的壁垒，只有时间能让它消散"},
+    {"owner": "玩家 id", "name": "钢筋铁骨", "attr_type": "defense", "value": 2, "cap": 4, "duration": 3, "damage_reduction": 50, "narrative": "受到伤害减半"},
+    {"owner": "玩家 id", "name": "圣光庇护", "attr_type": "defense", "value": 1, "cap": 1, "duration": 4, "shield": true, "shield_charges": 3, "block_heal_pct": 80, "narrative": "可挡 3 次攻击，每次挡下为全场回血"},
+    {"owner": "玩家 id", "name": "九命", "attr_type": "defense", "value": 1, "cap": 1, "duration": 5, "shield": true, "shield_charges": 3, "lethal_only": true, "narrative": "只抵挡致命攻击，共 3 次"},
     {"owner": "玩家 id", "name": "剧毒", "attr_type": "utility", "value": 3, "cap": 5, "per_turn": -3, "duration": 4, "narrative": "中毒，每回合发作"},
     {"owner": "目标玩家 id", "name": "冰封", "attr_type": "defense", "value": 2, "cap": 2, "freeze": true, "duration": 2, "narrative": "被寒霜冻住，无法行动"},
     {"owner": "玩家 id", "attr_id": "已有属性 id", "delta": -2},
@@ -262,6 +277,14 @@ def build_messages(
                 flags += " [冻结]"
             if a.per_turn:
                 flags += f" [每回合{a.per_turn:+d} HP]"
+            if a.indestructible:
+                flags += " [不可破坏]"
+            if a.damage_reduction:
+                flags += f" [减伤{a.damage_reduction}%]"
+            if a.shield and a.shield_charges > 0:
+                flags += f" [可挡{a.shield_charges}次{',仅致命' if a.lethal_only else ''}]"
+            if a.block_heal_pct:
+                flags += f" [格挡后全场回血{a.block_heal_pct}%]"
             attr_lines.append(
                 f"- {p.name}（id={pid}）：「{a.name}」id={a.attr_id} "
                 f"类型={a.attr_type} 值={a.value} cap={a.cap}{limit}{flags} "
@@ -413,6 +436,14 @@ def _normalize_attr(
     duration = max(0, min(MAX_ATTR_DURATION, raw_duration))
     raw_per_turn = int(change.per_turn or 0)
     per_turn = max(-hard, min(hard, raw_per_turn))
+    raw_red = int(change.damage_reduction or 0)
+    damage_reduction = max(0, min(90, raw_red))
+    raw_charges = int(change.shield_charges or 0)
+    shield_charges = max(0, min(MAX_ATTR_DURATION, raw_charges))
+    raw_heal = int(change.block_heal_pct or 0)
+    block_heal_pct = max(0, min(100, raw_heal))
+    # 次数护盾与格挡触发本质都是「挡下伤害」，引擎侧硬保证它们带免伤标记
+    shield = bool(change.shield) or shield_charges > 0 or block_heal_pct > 0
     created_names.add(key)
     clamped = (
         value != raw_value
@@ -420,6 +451,9 @@ def _normalize_attr(
         or attr_type != change.attr_type
         or duration != raw_duration
         or per_turn != raw_per_turn
+        or damage_reduction != raw_red
+        or shield_charges != raw_charges
+        or block_heal_pct != raw_heal
     )
     return (
         [
@@ -430,9 +464,14 @@ def _normalize_attr(
                 "value": value,
                 "cap": cap,
                 "duration": duration,
-                "shield": bool(change.shield),
+                "shield": shield,
                 "per_turn": per_turn,
                 "freeze": bool(change.freeze),
+                "indestructible": bool(change.indestructible),
+                "damage_reduction": damage_reduction,
+                "shield_charges": shield_charges,
+                "lethal_only": bool(change.lethal_only),
+                "block_heal_pct": block_heal_pct,
                 "narrative": narrative,
                 "created": True,
             }

@@ -86,7 +86,10 @@ export default function PlayerCard({
                 <b>{typeLabel(a.attr_type)}</b>
                 {a.name}
                 {a.shield ? (
-                  <span className="attr-shield">免伤</span>
+                  <span className="attr-shield">
+                    免伤{a.shield_charges > 0 ? `·可挡${a.shield_charges}次` : ''}
+                    {a.lethal_only ? '·仅致命' : ''}
+                  </span>
                 ) : (
                   <span className="attr-val">
                     {a.value}/{a.cap}
@@ -96,6 +99,13 @@ export default function PlayerCard({
                   <span className="attr-freeze">
                     冻结{a.charges > 0 ? `·剩${a.charges}回合` : ''}
                   </span>
+                )}
+                {a.indestructible && <span className="attr-immune">不可破坏</span>}
+                {a.damage_reduction > 0 && (
+                  <span className="attr-reduce">减伤{a.damage_reduction}%</span>
+                )}
+                {a.block_heal_pct > 0 && (
+                  <span className="attr-heal">格挡回血{a.block_heal_pct}%</span>
                 )}
                 {a.per_turn !== 0 && (
                   <span className={`attr-tick ${a.per_turn < 0 ? 'down' : 'up'}`}>

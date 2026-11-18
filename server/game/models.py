@@ -49,6 +49,11 @@ class Attribute:
     freeze: bool = False  # 冻结类能力：存在期间所有者无法行动，直到被解除 / 到期
     charges: int = 0  # 冻结剩余跳过次数：每次被跳过一个自己的回合扣 1，归零即消失
     per_turn: int = 0  # 周期效果：每回合开始自动结算的 HP 变化（负=毒发，正=回复）
+    indestructible: bool = False  # 玩家明确声明「不可破坏」：他人无法 remove/偷取，到期仍会消失
+    damage_reduction: int = 0  # 百分比减伤（0~90）：护甲抵扣后再按比例削减本次伤害
+    shield_charges: int = 0  # 免伤剩余次数：0=无限次；每次挡下伤害扣 1，归零即消失
+    lethal_only: bool = False  # 只抵挡致命伤害：非致命攻击不触发免伤，也不消耗次数
+    block_heal_pct: int = 0  # 每挡下一次伤害，为所有存活玩家回复各自最大生命的百分比
     sealed_at: float = field(default_factory=time.time)
 
     def public_view(self) -> dict:
@@ -65,6 +70,11 @@ class Attribute:
             "freeze": self.freeze,
             "charges": self.charges,
             "per_turn": self.per_turn,
+            "indestructible": self.indestructible,
+            "damage_reduction": self.damage_reduction,
+            "shield_charges": self.shield_charges,
+            "lethal_only": self.lethal_only,
+            "block_heal_pct": self.block_heal_pct,
         }
 
     def private_view(self) -> dict:
@@ -84,6 +94,11 @@ class Attribute:
             "freeze": self.freeze,
             "charges": self.charges,
             "per_turn": self.per_turn,
+            "indestructible": self.indestructible,
+            "damage_reduction": self.damage_reduction,
+            "shield_charges": self.shield_charges,
+            "lethal_only": self.lethal_only,
+            "block_heal_pct": self.block_heal_pct,
         }
 
 

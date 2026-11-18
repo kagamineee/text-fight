@@ -766,6 +766,33 @@ textarea {
   margin-left: 4px;
 }
 
+.attr-immune {
+  color: #d9c27a;
+  border: 1px solid rgba(196, 168, 96, 0.5);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.attr-reduce {
+  color: #c9a0d8;
+  border: 1px solid rgba(160, 112, 180, 0.45);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.attr-heal {
+  color: #8fd6b0;
+  border: 1px solid rgba(91, 146, 121, 0.45);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
 .chip-attack {
   border-color: rgba(189, 90, 69, 0.35);
   color: #c98b7a;

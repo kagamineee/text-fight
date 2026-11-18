@@ -23,6 +23,8 @@ const TYPE_LABEL: Record<string, string> = {
   adjudication: '裁定',
   system: '系统',
   attribute_open: '属性',
+  disaster: '天灾',
+  inheritance: '继承',
 }
 
 export default function LedgerPanel() {

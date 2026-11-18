@@ -65,11 +65,21 @@ async def run_one(bots: int, index: int) -> dict:
         raise AssertionError("对局未产生任何回合")
 
     alive = [p for p in room.players.values() if p.alive]
+    disasters = sum(1 for e in room.ledger if e.type == "disaster")
+    inherited = sum(
+        1
+        for e in room.ledger
+        if e.type == "inheritance" and (e.payload or {}).get("granted")
+    )
+    if room.turn_no >= room.pack.disaster.start_turn and not disasters:
+        raise AssertionError("已过天灾起始回合却没有天灾事件")
     return {
         "turns": room.turn_no,
         "winner": room.players[room.winner].name if room.winner else "无",
         "alive": len(alive),
         "events": len(room.ledger),
+        "disasters": disasters,
+        "inherited": inherited,
     }
 
 
@@ -92,7 +102,8 @@ async def main() -> None:
             result = await run_one(args.bots, i)
             print(
                 f"[{i + 1}/{args.games}] 回合 {result['turns']:>3} | "
-                f"事件 {result['events']:>5} | 幸存 {result['alive']} | "
+                f"事件 {result['events']:>5} | 天灾 {result['disasters']:>2} | "
+                f"继承 {result['inherited']:>2} | 幸存 {result['alive']} | "
                 f"胜者 {result['winner']}"
             )
         except Exception as exc:  # noqa: BLE001

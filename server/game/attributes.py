@@ -33,6 +33,11 @@ def create_attribute(
     shield: bool = False,
     freeze: bool = False,
     per_turn: int = 0,
+    indestructible: bool = False,
+    damage_reduction: int = 0,
+    shield_charges: int = 0,
+    lethal_only: bool = False,
+    block_heal_pct: int = 0,
 ) -> Attribute:
     name = name.strip()[:MAX_NAME_LEN]
     value = max(1, int(value))
@@ -58,6 +63,11 @@ def create_attribute(
         freeze=bool(freeze),
         charges=charges,
         per_turn=int(per_turn),
+        indestructible=bool(indestructible),
+        damage_reduction=max(0, min(90, int(damage_reduction))),
+        shield_charges=max(0, int(shield_charges)),
+        lethal_only=bool(lethal_only),
+        block_heal_pct=max(0, min(100, int(block_heal_pct))),
     )
 
 
@@ -129,4 +139,9 @@ def seal_event(attr: Attribute) -> dict:
         "freeze": attr.freeze,
         "charges": attr.charges,
         "per_turn": attr.per_turn,
+        "indestructible": attr.indestructible,
+        "damage_reduction": attr.damage_reduction,
+        "shield_charges": attr.shield_charges,
+        "lethal_only": attr.lethal_only,
+        "block_heal_pct": attr.block_heal_pct,
     }

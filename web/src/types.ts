@@ -14,6 +14,11 @@ export interface PublicAttr {
   freeze: boolean
   charges: number
   per_turn: number
+  indestructible: boolean
+  damage_reduction: number
+  shield_charges: number
+  lethal_only: boolean
+  block_heal_pct: number
 }
 
 export interface PrivateAttr extends PublicAttr {
@@ -70,6 +75,7 @@ export interface RoomState {
     }>
   } | null
   world_summary?: string
+  disaster?: { level: number; damage: number }
 }
 
 export interface LedgerEntry {

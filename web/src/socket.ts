@@ -260,6 +260,24 @@ function handle(msg: any) {
       toast(`${msg.name} 被「${msg.attr}」冻住，无法行动`, 'warn')
       return
 
+    case 'disaster': {
+      setState((s) =>
+        s.room
+          ? { room: { ...s.room, disaster: { level: msg.level, damage: msg.damage } } }
+          : {},
+      )
+      if (msg.level === 1) toast(`天灾降临：全场每回合受到 ${msg.damage} 点侵蚀`, 'warn')
+      else toast(`天灾 ${msg.level} 级：全场 -${msg.damage} HP`, 'warn')
+      return
+    }
+
+    case 'inheritance':
+      toast(
+        `${msg.killer_name} 继承了 ${msg.victim_name} 的「${msg.source_name}」（${msg.source_value} → ${msg.value}）`,
+        'good',
+      )
+      return
+
     case 'attribute_private': {
       const attr: PrivateAttr | undefined = msg.attr
       if (!attr) return
